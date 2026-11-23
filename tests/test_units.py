@@ -210,6 +210,7 @@ def _judge(tmp_path, monkeypatch, cap=2.0):
         gemini_api_key="g", anthropic_api_key="a", fallback_monthly_cap_usd=cap,
     )
     monkeypatch.setattr(judge_mod.time, "sleep", lambda s: None)
+    monkeypatch.setattr(judge_mod.Judge, "_gemini_chain", lambda self: ["flash-a", "flash-b"])
     db = dbm.Database(tmp_path / "j.db")
     return judge_mod, judge_mod.Judge(cfg, db), db
 
@@ -221,29 +222,29 @@ PICK = dict(title="t", uploader="u", duration=100, transcript="[1.0] hi", zones=
 
 def test_judge_uses_gemini_when_it_works(tmp_path, monkeypatch):
     jm, j, _ = _judge(tmp_path, monkeypatch)
-    monkeypatch.setattr(jm.Judge, "_call_gemini", lambda self, p: GOOD)
+    monkeypatch.setattr(jm.Judge, "_call_gemini", lambda self, p, m: GOOD)
     monkeypatch.setattr(jm.Judge, "_call_claude", lambda self, p: pytest.fail("fallback used"))
-    assert j.pick(**PICK)[0].model == j.cfg.gemini_model
+    assert j.pick(**PICK)[0].model == "flash-a"
 
 
 def test_judge_falls_back_to_claude(tmp_path, monkeypatch):
     jm, j, _ = _judge(tmp_path, monkeypatch)
     calls = []
 
-    def boom(self, p):
-        calls.append(1)
+    def boom(self, p, m):
+        calls.append(m)
         raise RuntimeError("429 quota")
 
     monkeypatch.setattr(jm.Judge, "_call_gemini", boom)
     monkeypatch.setattr(jm.Judge, "_call_claude", lambda self, p: GOOD)
     assert j.pick(**PICK)[0].model == j.cfg.fallback_model
-    assert len(calls) == 3
+    assert calls == ["flash-a", "flash-b", "flash-a"]
 
 
 def test_judge_respects_fallback_cap(tmp_path, monkeypatch):
     jm, j, db = _judge(tmp_path, monkeypatch, cap=0.5)
     db.record_llm_usage("anthropic", "m", 0, 0, 0.6)
-    monkeypatch.setattr(jm.Judge, "_call_gemini", lambda self, p: "not json")
+    monkeypatch.setattr(jm.Judge, "_call_gemini", lambda self, p, m: "not json")
     monkeypatch.setattr(jm.Judge, "_call_claude", lambda self, p: pytest.fail("cap ignored"))
     with pytest.raises(jm.JudgeBudgetExceeded):
         j.pick(**PICK)
@@ -284,4 +285,30 @@ def test_resolve_gemini_model_falls_back_when_missing():
     client = SimpleNamespace(models=SimpleNamespace(list=lambda: models))
     assert jm.resolve_gemini_model(client, "gemini-flash-latest") == "gemini-2.5-flash"
     assert jm.resolve_gemini_model(client, "gemini-2.5-flash-lite") == "gemini-2.5-flash-lite"
+    jm._RESOLVED_MODELS.clear()
+
+
+def test_overloaded_model_moves_to_next_in_chain(tmp_path, monkeypatch):
+    jm, j, _ = _judge(tmp_path, monkeypatch)
+
+    def call(self, p, m):
+        if m == "flash-a":
+            raise RuntimeError("503 UNAVAILABLE high demand")
+        return GOOD
+
+    monkeypatch.setattr(jm.Judge, "_call_gemini", call)
+    assert j.pick(**PICK)[0].model == "flash-b"
+
+
+def test_gemini_model_chain_order():
+    from types import SimpleNamespace
+
+    from clipfarm.pipeline import judge as jm
+
+    jm._RESOLVED_MODELS.clear()
+    names = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.8-flash-lite", "gemini-3.9-flash-preview", "gemini-3.8-pro"]
+    models = [SimpleNamespace(name=f"models/{n}", supported_actions=["generateContent"]) for n in names]
+    client = SimpleNamespace(models=SimpleNamespace(list=lambda: models))
+    assert jm.gemini_model_chain(client, "gemini-flash-latest") == [
+        "gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.9-flash-preview"]
     jm._RESOLVED_MODELS.clear()

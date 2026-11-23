@@ -98,7 +98,7 @@ class Candidate:
         return 0.5 * self.llm_score + 0.5 * (10.0 * self.signal_score)
 
 
-_RESOLVED_MODELS: dict[str, str] = {}
+_RESOLVED_MODELS: dict[str, list[str]] = {}
 _SKIP_WORDS = ("lite", "tts", "image", "live", "audio", "embedding", "8b", "exp", "robotics", "computer")
 
 
@@ -114,9 +114,16 @@ def pick_flash_model(names: list[str]) -> str | None:
     return max(cands, key=lambda n: ("preview" not in n, version(n), "latest" not in n, -len(n)))
 
 
-def resolve_gemini_model(client, wanted: str) -> str:
-    """The configured model if this API key can use it, else the best available Flash model.
-    Model names change often; this keeps a stale GEMINI_MODEL from breaking every job."""
+def _rank(n: str) -> tuple:
+    m = re.search(r"gemini-(\d+(?:\.\d+)?)", n)
+    version = float(m.group(1)) if m else 0.0
+    return ("lite" not in n, "preview" not in n, version, "latest" not in n, -len(n))
+
+
+def gemini_model_chain(client, wanted: str, size: int = 3) -> list[str]:
+    """Models to try, in order: the configured one (if this key can use it), then the best other
+    Flash models. Model names change often and a single model can be overloaded (503), so jobs
+    move down the chain instead of failing."""
     if wanted in _RESOLVED_MODELS:
         return _RESOLVED_MODELS[wanted]
     names: list[str] = []
@@ -124,11 +131,27 @@ def resolve_gemini_model(client, wanted: str) -> str:
         actions = getattr(m, "supported_actions", None) or []
         if not actions or "generateContent" in actions:
             names.append((m.name or "").removeprefix("models/"))
-    chosen = wanted if wanted in names else (pick_flash_model(names) or wanted)
-    if chosen != wanted:
-        log.warning("Gemini model %s is not available for this key; using %s", wanted, chosen)
-    _RESOLVED_MODELS[wanted] = chosen
-    return chosen
+    usable = [n for n in names if n.startswith("gemini") and "flash" in n
+              and not any(w in n for w in _SKIP_WORDS if w != "lite")]
+    chain = [wanted] if wanted in names else []
+    best = pick_flash_model(names)
+    if best and best not in chain:
+        chain.append(best)
+    for n in sorted(usable, key=_rank, reverse=True):
+        if len(chain) >= size:
+            break
+        if n not in chain:
+            chain.append(n)
+    if not chain:
+        chain = [wanted]
+    if chain[0] != wanted:
+        log.warning("Gemini model %s is not available for this key; using %s", wanted, chain[0])
+    _RESOLVED_MODELS[wanted] = chain
+    return chain
+
+
+def resolve_gemini_model(client, wanted: str) -> str:
+    return gemini_model_chain(client, wanted)[0]
 
 
 class JudgeError(RuntimeError):
@@ -247,16 +270,28 @@ class Judge:
         self.cfg = cfg
         self.db = db
         self.gemini_model_used = cfg.gemini_model
+        self._client = None
 
     # -- providers -------------------------------------------------------------
 
-    def _call_gemini(self, prompt: str) -> str:
+    def _gemini_client(self):
         from google import genai
+
+        if self._client is None:
+            self._client = genai.Client(api_key=self.cfg.gemini_api_key)
+        return self._client
+
+    def _gemini_chain(self) -> list[str]:
+        try:
+            return gemini_model_chain(self._gemini_client(), self.cfg.gemini_model)
+        except Exception as exc:  # listing failed: just try the configured name
+            log.warning("Could not list Gemini models: %s", exc)
+            return [self.cfg.gemini_model]
+
+    def _call_gemini(self, prompt: str, model: str) -> str:
         from google.genai import types
 
-        client = genai.Client(api_key=self.cfg.gemini_api_key)
-        model = resolve_gemini_model(client, self.cfg.gemini_model)
-        self.gemini_model_used = model
+        client = self._gemini_client()
         resp = client.models.generate_content(
             model=model,
             contents=prompt,
@@ -325,17 +360,21 @@ class Judge:
 
         errors: list[str] = []
         if self.cfg.gemini_api_key:
-            for attempt in range(3):
+            chain = self._gemini_chain()
+            attempts = max(3, len(chain))
+            for attempt in range(attempts):
+                model = chain[attempt % len(chain)]
                 try:
-                    cands = parse_candidates(self._call_gemini(prompt), duration, self.gemini_model_used)
+                    cands = parse_candidates(self._call_gemini(prompt, model), duration, model)
                     if cands:
+                        self.gemini_model_used = model
                         return cands
-                    errors.append("gemini: no valid clips in response")
-                except Exception as exc:  # network, quota, bad JSON: all mean "try again / fall back"
-                    errors.append(f"gemini: {exc}")
-                    log.warning("Gemini attempt %d failed: %s", attempt + 1, exc)
-                if attempt < 2:
-                    time.sleep(20 * (attempt + 1))
+                    errors.append(f"{model}: no valid clips in response")
+                except Exception as exc:  # overloaded, quota, network, bad JSON: try the next model
+                    errors.append(f"{model}: {str(exc)[:200]}")
+                    log.warning("Gemini attempt %d (%s) failed: %s", attempt + 1, model, exc)
+                if attempt < attempts - 1:
+                    time.sleep(10 * (attempt + 1))
 
         if not self.cfg.anthropic_api_key:
             raise JudgeError("; ".join(errors) or "No judge API key configured")

@@ -73,16 +73,28 @@ def check_gemini(cfg) -> None:
     try:
         from google import genai
 
-        from .pipeline.judge import resolve_gemini_model
+        from .pipeline.judge import gemini_model_chain
 
         # Keep a reference: the SDK closes its HTTP client when the Client object is freed.
         client = genai.Client(api_key=cfg.gemini_api_key)
-        model = resolve_gemini_model(client, cfg.gemini_model)
-        resp = client.models.generate_content(model=model, contents="Reply with the word ok.")
-        note = "" if model == cfg.gemini_model else f" ({cfg.gemini_model} unavailable, auto-picked)"
-        report("OK", "Gemini", f"{model}{note} answered: {(resp.text or '').strip()[:20]}")
+        chain = gemini_model_chain(client, cfg.gemini_model)
     except Exception as exc:
-        report("FAIL", "Gemini", f"{cfg.gemini_model}: {str(exc)[:200]}")
+        report("FAIL", "Gemini", f"key rejected or Google unreachable: {str(exc)[:200]}")
+        return
+    busy = []
+    for model in chain:
+        try:
+            resp = client.models.generate_content(model=model, contents="Reply with the word ok.")
+        except Exception as exc:
+            busy.append(f"{model}: {str(exc)[:80]}")
+            continue
+        note = "" if model == cfg.gemini_model else f" ({cfg.gemini_model} unavailable, auto-picked)"
+        report("OK", "Gemini", f"{model}{note} answered: {(resp.text or '').strip()[:20]}. Order: {', '.join(chain)}")
+        return
+    if any("503" in b or "UNAVAILABLE" in b or "429" in b for b in busy):
+        report("WARN", "Gemini", "key works but every model is busy right now (temporary): " + "; ".join(busy))
+    else:
+        report("FAIL", "Gemini", "; ".join(busy))
 
 
 def check_claude(cfg) -> None:
