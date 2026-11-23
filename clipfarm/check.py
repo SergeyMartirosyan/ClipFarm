@@ -69,9 +69,9 @@ def check_gemini(cfg) -> None:
     try:
         from google import genai
 
-        resp = genai.Client(api_key=cfg.gemini_api_key).models.generate_content(
-            model=cfg.gemini_model, contents="Reply with the word ok."
-        )
+        # Keep a reference: the SDK closes its HTTP client when the Client object is freed.
+        client = genai.Client(api_key=cfg.gemini_api_key)
+        resp = client.models.generate_content(model=cfg.gemini_model, contents="Reply with the word ok.")
         report("OK", "Gemini", f"{cfg.gemini_model} answered: {(resp.text or '').strip()[:20]}")
     except Exception as exc:
         report("FAIL", "Gemini", f"{cfg.gemini_model}: {str(exc)[:200]}")
