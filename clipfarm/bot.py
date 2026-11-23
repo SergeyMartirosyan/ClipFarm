@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import logging
 import re
+import time
+
+import httpx
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
@@ -153,6 +156,28 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         log.info("Message edit failed: %s", exc)
 
 
+def wait_for_telegram(cfg) -> str:
+    """Block until Telegram accepts the token, honouring its retry_after. Crashing instead would make
+    systemd restart the bot every few seconds, and that restart loop is what gets a bot rate-limited."""
+    delay = 15
+    while True:
+        try:
+            body = httpx.get(f"{cfg.telegram_api_base}/bot{cfg.telegram_token}/getMe", timeout=60).json()
+            if body.get("ok"):
+                return body["result"]["username"]
+            if body.get("error_code") == 401:
+                log.error("Telegram rejected TELEGRAM_BOT_TOKEN (401). Fix .env; retrying in 10 minutes.")
+                wait = 600
+            else:
+                wait = (body.get("parameters") or {}).get("retry_after") or delay
+                log.warning("Telegram: %s. Waiting %ss before trying again.", body.get("description"), wait)
+        except (httpx.HTTPError, ValueError) as exc:
+            wait = delay
+            log.warning("Telegram unreachable (%s). Waiting %ss.", exc.__class__.__name__, wait)
+        time.sleep(min(int(wait), 600) + 1)
+        delay = min(delay * 2, 600)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)  # it logs every poll, including the token URL
@@ -181,7 +206,8 @@ def main() -> None:
     app.add_handler(MessageHandler(owner & filters.TEXT & ~filters.COMMAND, on_text))
     app.add_handler(CallbackQueryHandler(on_button))
 
-    log.info("Bot started; only user %s can use it", cfg.telegram_owner_id)
+    username = wait_for_telegram(cfg)
+    log.info("Bot @%s started; only user %s can use it", username, cfg.telegram_owner_id)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

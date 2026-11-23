@@ -63,7 +63,8 @@ def check_telegram(cfg) -> None:
         else:
             report("FAIL", "Telegram", r.get("description", "token rejected"))
     except Exception as exc:
-        report("FAIL", "Telegram", str(exc))
+        route = "direct" if cfg.telegram_api_base == "https://api.telegram.org" else f"via {cfg.telegram_api_base}"
+        report("FAIL", "Telegram", f"{exc.__class__.__name__}: {exc} ({route})")
 
 
 def check_gemini(cfg) -> None:
