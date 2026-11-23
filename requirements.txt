@@ -1,0 +1,24 @@
+# Core
+python-dotenv>=1.0
+httpx>=0.27
+numpy>=1.26
+
+# Telegram bot
+python-telegram-bot>=21.0
+
+# Download + transcription
+yt-dlp>=2025.1.1
+faster-whisper>=1.1
+
+# Layout (face detection via OpenCV YuNet)
+opencv-python-headless>=4.9
+
+# Clip judge (Gemini free tier, Claude Haiku fallback)
+google-genai>=1.20
+anthropic>=0.75
+
+# Storage (Cloudflare R2 speaks the S3 API)
+boto3>=1.34
+
+# Dev
+pytest>=8.0

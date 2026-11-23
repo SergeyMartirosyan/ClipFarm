@@ -1,0 +1,7 @@
+{
+  "_comment": "Optional manual crops per channel, keyed by uploader name or id (lowercase). Boxes are [x, y, width, height] as fractions of the frame (0..1). When a channel has a preset, face detection is skipped.",
+  "somestreamer": {
+    "cam": [0.0, 0.62, 0.24, 0.38],
+    "game": [0.22, 0.0, 0.56, 1.0]
+  }
+}
