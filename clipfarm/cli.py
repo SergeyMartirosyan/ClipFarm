@@ -34,7 +34,9 @@ def cmd_process(args) -> None:
         c = rc.candidate
         print(
             f"  clip {rc.idx}/{rc.total}  {c.start:7.1f}-{c.end:7.1f}s  score {c.final_score:4.1f}  "
-            f"{rc.layout:8s} {c.title}\n      -> {rc.final_path}"
+            f"{rc.layout:8s} {c.title}\n"
+            + (f"      saw: {c.vision_note}\n" if c.vision_note else "")
+            + f"      -> {rc.final_path}"
         )
 
     try:

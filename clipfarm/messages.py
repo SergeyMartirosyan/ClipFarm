@@ -62,6 +62,8 @@ def clip_caption(clip: Mapping[str, Any]) -> str:
     ]
     if clip["reason"]:
         lines.append(f"💡 {clip['reason']}")
+    if clip["vision_note"]:
+        lines.append(f"👁 {clip['vision_note']}")
     note = DECISION_NOTE.get(clip["status"])
     if note:
         lines += ["", note]

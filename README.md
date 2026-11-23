@@ -24,7 +24,8 @@ Telegram link ─► yt-dlp ─► transcript ─► signals + LLM judge ─► 
 | 6. Posting scheduler + YouTube / TikTok / Instagram uploaders | ⏳ next |
 | 7. VM setup script, systemd services, self-check | ✅ |
 | Twitch signals: viewer clips (Helix API) + chat replay bursts and emotes | ✅ |
-| Gemini watching candidate clips (visual re-scoring), laughter/scream detection | ⏳ |
+| Gemini watches frames of the top 20 candidates and ranks them against each other | ✅ |
+| Game-sound tagging (gunfire, explosions, screams), on-screen text | ⏳ |
 
 ## How clips are picked
 
@@ -35,7 +36,8 @@ Telegram link ─► yt-dlp ─► transcript ─► signals + LLM judge ─► 
 | Judge | **Gemini** (free tier) reads the full timestamped transcript plus hot zones annotated with chat mood, and the list of viewer clip titles (which describe the on-screen action the transcript can't show), and returns scored clips as JSON. Up to 3 tries, then **Claude Haiku 5.5** with the same prompt and schema. Fallback spend is logged and capped per month. |
 | Taste learning | Your 5 latest approved and 5 latest skipped clips are added to the prompt as examples |
 | Clean cuts | Start/end snap to sentence boundaries, then to shot cuts within 0.8 s (ffmpeg scene detection); length forced into 20–60 s |
-| Ranking | `final = 0.5 × LLM score + 0.5 × signal strength`, non-overlapping, top N |
+| Vision review | The 20 best non-overlapping candidates are shown to Gemini as 6 frames each, with what was said and how chat reacted. It scores how much happens on screen and the opening, flags menus/loading/idle screens, and ranks all candidates against each other (one request per video; fails soft). |
+| Ranking | `final = 0.5 × LLM score + 0.5 × signal strength + rank bonus (−1…+1) − 3 if menu/idle`, where the LLM score includes the visual score once reviewed; non-overlapping, top N |
 | Layout | OpenCV **YuNet** face detection on 12 frames: small steady webcam face → `facecam` (cam 40% top / game 60% bottom); big face → `face` (9:16 crop on the speaker); else → `blur` (full frame over a blurred copy). Per-channel overrides in `presets.json`. |
 | Captions | Whisper word timestamps on the clip, 3-word uppercase groups, the spoken word highlighted, burned in with ffmpeg/libass |
 
@@ -140,6 +142,7 @@ clipfarm/
     ├── signals.py     loudness, heatmap, Twitch signals → weighted hot zones
     ├── twitch.py      viewer clips (Helix) + chat replay (GQL) → signals
     ├── judge.py       prompt, schema, Gemini → Haiku fallback
+    ├── vision.py      Gemini watches frames of the shortlist, ranks it
     ├── select.py      boundary snapping, overlap removal
     ├── layout.py      face detection → facecam / face / blur
     ├── captions.py    word groups → ASS subtitles

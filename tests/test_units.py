@@ -312,3 +312,16 @@ def test_gemini_model_chain_order():
     assert jm.gemini_model_chain(client, "gemini-flash-latest") == [
         "gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.9-flash-preview"]
     jm._RESOLVED_MODELS.clear()
+
+
+def test_old_database_gets_new_columns(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    con = sqlite3.connect(path)
+    con.executescript(dbm.SCHEMA.replace("    vision_note         TEXT NOT NULL DEFAULT '',\n", ""))
+    con.close()
+    d = dbm.Database(path)
+    cid = d.add_clip(job_id=d.add_job("u"), idx=1, total=1, start=0, end=30, title="t", vision_note="saw a goal")
+    assert d.get_clip(cid)["vision_note"] == "saw a goal"
+    dbm.Database(path)  # second open must not try to add the column again

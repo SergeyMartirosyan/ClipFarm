@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS clips (
     title               TEXT NOT NULL,
     hashtags            TEXT NOT NULL DEFAULT '',
     reason              TEXT NOT NULL DEFAULT '',
+    vision_note         TEXT NOT NULL DEFAULT '',
     llm_score           REAL NOT NULL DEFAULT 0,
     signal_score        REAL NOT NULL DEFAULT 0,
     final_score         REAL NOT NULL DEFAULT 0,
@@ -85,6 +86,10 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as con:
             con.executescript(SCHEMA)
+            # Columns added after the first release (CREATE TABLE IF NOT EXISTS won't add them).
+            cols = {r[1] for r in con.execute("PRAGMA table_info(clips)")}
+            if "vision_note" not in cols:
+                con.execute("ALTER TABLE clips ADD COLUMN vision_note TEXT NOT NULL DEFAULT ''")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

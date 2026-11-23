@@ -87,15 +87,26 @@ class Candidate:
     model: str = ""
     signal_score: float = 0.0
     extra: dict = field(default_factory=dict)
+    # Set by the vision review (pipeline/vision.py) when it ran:
+    visual: int | None = None       # 0-10: how much happens on screen
+    menu_or_idle: bool = False      # menu, loading screen, AFK: a bad clip whatever was said
+    rank_bonus: float = 0.0         # -1..+1 from ranking the finalists against each other
+    vision_note: str = ""           # what the model saw
 
     @property
     def llm_score(self) -> float:
-        return 0.4 * self.hook + 0.3 * self.standalone + 0.3 * self.payoff
+        if self.visual is None:
+            return 0.4 * self.hook + 0.3 * self.standalone + 0.3 * self.payoff
+        return 0.3 * self.hook + 0.25 * self.standalone + 0.25 * self.payoff + 0.2 * self.visual
 
     @property
     def final_score(self) -> float:
-        """0..10: half the LLM's judgment, half what the audience signals say."""
-        return 0.5 * self.llm_score + 0.5 * (10.0 * self.signal_score)
+        """0..10: half the LLM's judgment, half what the audience signals say, nudged by the
+        comparative ranking and pushed down hard for menus / idle screens."""
+        score = 0.5 * self.llm_score + 0.5 * (10.0 * self.signal_score) + self.rank_bonus
+        if self.menu_or_idle:
+            score -= 3.0
+        return max(0.0, min(10.0, score))
 
 
 _RESOLVED_MODELS: dict[str, list[str]] = {}

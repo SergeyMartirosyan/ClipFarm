@@ -12,7 +12,7 @@ from typing import Callable
 from ..db import Database
 from ..media import extract_audio, probe, scene_cuts
 from ..storage import R2, clip_key
-from . import captions, download, layout as layout_mod, render, select, signals, transcribe, twitch
+from . import captions, download, layout as layout_mod, render, select, signals, transcribe, twitch, vision
 from .judge import Candidate, Judge
 
 log = logging.getLogger(__name__)
@@ -67,6 +67,25 @@ def fetch_twitch_signals(cfg, source: download.Source, duration: float) -> Twitc
             log.warning("Twitch chat replay unavailable: %s", exc)
             out.notes.append("chat replay failed")
     return out
+
+
+def audience_note(tw: TwitchSignals | None, start: float, end: float) -> str:
+    """How the audience reacted inside a clip, in words, for the vision review."""
+    if tw is None:
+        return ""
+    notes = []
+    if tw.chat is not None:
+        # The busiest 12 s of chat within the clip (chat time = video time + delay).
+        a, b = int(start) + twitch.CHAT_DELAY_SECONDS, int(end) + twitch.CHAT_DELAY_SECONDS
+        window = tw.chat.rate[a:b]
+        if window.size:
+            peak = a + int(window.argmax())
+            s = tw.chat.summary(max(a, peak - 4))
+            if s:
+                notes.append(s)
+    for c in sorted(twitch.clips_near(tw.clips, start, end), key=lambda c: c.views, reverse=True)[:2]:
+        notes.append(f'viewers clipped this: "{c.title}" ({c.views} views)')
+    return "; ".join(notes)
 
 
 def annotate_zones(zones: list[signals.HotZone], tw: TwitchSignals | None) -> None:
@@ -154,7 +173,8 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
     on_status("analyzing", "signals: " + sig.describe() + (f"; {', '.join(tw.notes)}" if tw else ""))
     zones = signals.hot_zones(sig)
     annotate_zones(zones, tw)
-    candidates = Judge(cfg, db).pick(
+    judge = Judge(cfg, db)
+    candidates = judge.pick(
         title=source.title,
         uploader=source.uploader,
         duration=duration,
@@ -173,8 +193,16 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
         )
         c = select.with_bounds(c, start, end)
         c.signal_score = sig.strength(start, end)
+        c.extra["audience"] = audience_note(tw, start, end)
         snapped.append(c)
-    chosen = select.choose(snapped, cfg.clips_per_video)
+
+    # Second look: Gemini watches frames of the best non-overlapping candidates and ranks them.
+    shortlist = select.choose(snapped, max(cfg.clips_per_video, cfg.vision_candidates))
+    if cfg.vision_review and cfg.gemini_api_key and len(shortlist) > 1:
+        on_status("analyzing", f"AI is watching the top {len(shortlist)} candidates")
+        note = vision.VisionReviewer(cfg, judge).review(source.video_path, shortlist, segments)
+        log.info("Vision review: %s", note)
+    chosen = select.choose(shortlist, cfg.clips_per_video)
     # Present in story order; scores are shown on each clip.
     chosen.sort(key=lambda c: c.start)
     if not chosen:

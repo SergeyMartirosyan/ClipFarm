@@ -86,7 +86,7 @@ class Worker:
             c = rc.candidate
             clip_id = self.db.add_clip(
                 job_id=job_id, idx=rc.idx, total=rc.total, start=c.start, end=c.end,
-                title=c.title, hashtags=" ".join(c.hashtags), reason=c.reason,
+                title=c.title, hashtags=" ".join(c.hashtags), reason=c.reason, vision_note=c.vision_note,
                 llm_score=c.llm_score, signal_score=c.signal_score, final_score=c.final_score,
                 judge_model=c.model, layout=rc.layout, local_path=str(rc.final_path),
                 r2_key=rc.r2_key, public_url=rc.public_url,

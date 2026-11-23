@@ -53,6 +53,9 @@ class Config:
     clip_max_seconds: int
     max_source_hours: float
 
+    vision_review: bool
+    vision_candidates: int
+
     # Download
     ytdlp_cookies: str
 
@@ -118,6 +121,8 @@ def load_config(env_file: str | None = None) -> Config:
         clip_min_seconds=_int("CLIP_MIN_SECONDS", 20),
         clip_max_seconds=_int("CLIP_MAX_SECONDS", 60),
         max_source_hours=_float("MAX_SOURCE_HOURS", 6.0),
+        vision_review=_str("VISION_REVIEW", "1").lower() not in {"0", "false", "no", "off"},
+        vision_candidates=_int("VISION_CANDIDATES", 20),
         ytdlp_cookies=_str("YTDLP_COOKIES"),
         twitch_client_id=_str("TWITCH_CLIENT_ID"),
         twitch_client_secret=_str("TWITCH_CLIENT_SECRET"),
