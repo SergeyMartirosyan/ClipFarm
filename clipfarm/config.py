@@ -10,7 +10,8 @@ from dotenv import load_dotenv
 
 
 def _str(name: str, default: str = "") -> str:
-    return os.environ.get(name, default).strip()
+    """An empty value in .env (e.g. `GEMINI_MODEL=`) means 'use the default'."""
+    return os.environ.get(name, "").strip() or default
 
 
 def _int(name: str, default: int) -> int:
@@ -28,6 +29,7 @@ class Config:
     # Telegram
     telegram_token: str
     telegram_owner_id: int
+    telegram_api_base: str
 
     # Paths
     data_dir: Path
@@ -100,6 +102,7 @@ def load_config(env_file: str | None = None) -> Config:
     cfg = Config(
         telegram_token=_str("TELEGRAM_BOT_TOKEN"),
         telegram_owner_id=_int("TELEGRAM_OWNER_ID", 0),
+        telegram_api_base=_str("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/"),
         data_dir=data_dir,
         local_retention_days=_int("LOCAL_RETENTION_DAYS", 10),
         gemini_api_key=_str("GEMINI_API_KEY"),

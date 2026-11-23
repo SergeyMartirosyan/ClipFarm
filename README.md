@@ -93,6 +93,19 @@ Without Telegram (for testing):
 .venv/bin/python -m clipfarm.cli cleanup
 ```
 
+## Telegram relay (only if Telegram blocks your server)
+
+Some cloud IPs or regions get throttled by Telegram: `clipfarm.check` then reports a timeout or
+"Telegram is rate-limiting this server". Route the bot through a free Cloudflare Worker:
+
+1. dash.cloudflare.com → **Workers & Pages** → **Create** → **Create Worker** → name it (e.g. `tg-relay`) → **Deploy**.
+2. **Edit code**, replace everything with `deploy/telegram-relay.js`, **Deploy**.
+3. Copy the worker URL (e.g. `https://tg-relay.yourname.workers.dev`) into `.env`:
+   `TELEGRAM_API_BASE=https://tg-relay.yourname.workers.dev`
+4. Run `.venv/bin/python -m clipfarm.check`; Telegram should show ✅ "via …workers.dev".
+
+The free Workers plan allows 100,000 requests a day; the bot uses a few thousand.
+
 ## Storage
 
 - `data/work/job-N/`: the source download and audio, deleted when the job ends.

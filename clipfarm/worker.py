@@ -27,7 +27,7 @@ class Worker:
     def __init__(self):
         self.cfg = load_config()
         self.db = dbm.Database(self.cfg.db_path)
-        self.tg = Telegram(self.cfg.telegram_token) if self.cfg.telegram_enabled else None
+        self.tg = Telegram(self.cfg.telegram_token, self.cfg.telegram_api_base) if self.cfg.telegram_enabled else None
         self.transcriber = Transcriber(
             self.cfg.whisper_model, self.cfg.whisper_compute_type, self.cfg.whisper_threads
         )

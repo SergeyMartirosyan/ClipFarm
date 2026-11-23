@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 
 import httpx
@@ -18,13 +19,20 @@ class TelegramError(RuntimeError):
 
 
 class Telegram:
-    def __init__(self, token: str):
-        self.base = f"https://api.telegram.org/bot{token}"
-        self.http = httpx.Client(timeout=httpx.Timeout(30.0, write=300.0))
+    def __init__(self, token: str, api_base: str = "https://api.telegram.org"):
+        self.base = f"{api_base.rstrip('/')}/bot{token}"
+        self.http = httpx.Client(timeout=httpx.Timeout(60.0, write=300.0))
 
     def _call(self, method: str, data: dict, files: dict | None = None) -> dict:
-        resp = self.http.post(f"{self.base}/{method}", data=data, files=files)
-        body = resp.json()
+        for attempt in range(3):
+            resp = self.http.post(f"{self.base}/{method}", data=data, files=files)
+            body = resp.json()
+            retry = (body.get("parameters") or {}).get("retry_after")
+            if resp.status_code == 429 and retry and attempt < 2 and not files:
+                log.warning("Telegram rate limit on %s; waiting %ss", method, retry)
+                time.sleep(min(int(retry), 120) + 1)
+                continue
+            break
         if not body.get("ok"):
             raise TelegramError(f"{method}: {body.get('description')}")
         return body["result"]

@@ -247,3 +247,41 @@ def test_judge_respects_fallback_cap(tmp_path, monkeypatch):
     monkeypatch.setattr(jm.Judge, "_call_claude", lambda self, p: pytest.fail("cap ignored"))
     with pytest.raises(jm.JudgeBudgetExceeded):
         j.pick(**PICK)
+
+
+# --- config + gemini model picking ---------------------------------------------------------------
+
+def test_empty_env_values_fall_back_to_defaults(tmp_path, monkeypatch):
+    from clipfarm.config import load_config
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "d"))
+    monkeypatch.setenv("TELEGRAM_API_BASE", "")
+    monkeypatch.setenv("GEMINI_MODEL", "")
+    cfg = load_config(env_file=str(tmp_path / "none.env"))
+    assert cfg.telegram_api_base == "https://api.telegram.org"
+    assert cfg.gemini_model == "gemini-flash-latest"
+
+
+def test_pick_flash_model_prefers_stable_newest_full_flash():
+    from clipfarm.pipeline.judge import pick_flash_model
+
+    names = ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.0-flash-preview",
+             "gemini-2.5-pro", "gemini-2.5-flash-preview-tts", "gemini-2.5-flash-image", "embedding-001"]
+    assert pick_flash_model(names) == "gemini-2.5-flash"
+    assert pick_flash_model(["gemini-3.0-flash-preview", "gemini-2.0-flash-lite"]) == "gemini-3.0-flash-preview"
+    assert pick_flash_model(["gemini-2.5-pro"]) is None
+
+
+def test_resolve_gemini_model_falls_back_when_missing():
+    from types import SimpleNamespace
+
+    from clipfarm.pipeline import judge as jm
+
+    jm._RESOLVED_MODELS.clear()
+    models = [SimpleNamespace(name="models/gemini-2.5-flash", supported_actions=["generateContent"]),
+              SimpleNamespace(name="models/gemini-2.5-flash-lite", supported_actions=["generateContent"]),
+              SimpleNamespace(name="models/text-embedding-004", supported_actions=["embedContent"])]
+    client = SimpleNamespace(models=SimpleNamespace(list=lambda: models))
+    assert jm.resolve_gemini_model(client, "gemini-flash-latest") == "gemini-2.5-flash"
+    assert jm.resolve_gemini_model(client, "gemini-2.5-flash-lite") == "gemini-2.5-flash-lite"
+    jm._RESOLVED_MODELS.clear()

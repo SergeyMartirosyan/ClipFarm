@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -95,6 +96,39 @@ class Candidate:
     def final_score(self) -> float:
         """0..10: half the LLM's judgment, half what the audience signals say."""
         return 0.5 * self.llm_score + 0.5 * (10.0 * self.signal_score)
+
+
+_RESOLVED_MODELS: dict[str, str] = {}
+_SKIP_WORDS = ("lite", "tts", "image", "live", "audio", "embedding", "8b", "exp", "robotics", "computer")
+
+
+def pick_flash_model(names: list[str]) -> str | None:
+    """Best general-purpose Flash model from a model list: stable over preview, newest version."""
+    def version(n: str) -> float:
+        m = re.search(r"gemini-(\d+(?:\.\d+)?)", n)
+        return float(m.group(1)) if m else 0.0
+
+    cands = [n for n in names if n.startswith("gemini") and "flash" in n and not any(w in n for w in _SKIP_WORDS)]
+    if not cands:
+        return None
+    return max(cands, key=lambda n: ("preview" not in n, version(n), "latest" not in n, -len(n)))
+
+
+def resolve_gemini_model(client, wanted: str) -> str:
+    """The configured model if this API key can use it, else the best available Flash model.
+    Model names change often; this keeps a stale GEMINI_MODEL from breaking every job."""
+    if wanted in _RESOLVED_MODELS:
+        return _RESOLVED_MODELS[wanted]
+    names: list[str] = []
+    for m in client.models.list():
+        actions = getattr(m, "supported_actions", None) or []
+        if not actions or "generateContent" in actions:
+            names.append((m.name or "").removeprefix("models/"))
+    chosen = wanted if wanted in names else (pick_flash_model(names) or wanted)
+    if chosen != wanted:
+        log.warning("Gemini model %s is not available for this key; using %s", wanted, chosen)
+    _RESOLVED_MODELS[wanted] = chosen
+    return chosen
 
 
 class JudgeError(RuntimeError):
@@ -212,6 +246,7 @@ class Judge:
     def __init__(self, cfg, db: Database | None = None):
         self.cfg = cfg
         self.db = db
+        self.gemini_model_used = cfg.gemini_model
 
     # -- providers -------------------------------------------------------------
 
@@ -220,8 +255,10 @@ class Judge:
         from google.genai import types
 
         client = genai.Client(api_key=self.cfg.gemini_api_key)
+        model = resolve_gemini_model(client, self.cfg.gemini_model)
+        self.gemini_model_used = model
         resp = client.models.generate_content(
-            model=self.cfg.gemini_model,
+            model=model,
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
@@ -233,7 +270,7 @@ class Judge:
         if self.db is not None and resp.usage_metadata is not None:
             u = resp.usage_metadata
             self.db.record_llm_usage(
-                "gemini", self.cfg.gemini_model,
+                "gemini", model,
                 int(u.prompt_token_count or 0), int(u.candidates_token_count or 0), 0.0,
             )
         if not resp.text:
@@ -290,7 +327,7 @@ class Judge:
         if self.cfg.gemini_api_key:
             for attempt in range(3):
                 try:
-                    cands = parse_candidates(self._call_gemini(prompt), duration, self.cfg.gemini_model)
+                    cands = parse_candidates(self._call_gemini(prompt), duration, self.gemini_model_used)
                     if cands:
                         return cands
                     errors.append("gemini: no valid clips in response")

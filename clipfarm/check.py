@@ -53,9 +53,13 @@ def check_telegram(cfg) -> None:
         report("FAIL", "Telegram", "set TELEGRAM_BOT_TOKEN and TELEGRAM_OWNER_ID")
         return
     try:
-        r = httpx.get(f"https://api.telegram.org/bot{cfg.telegram_token}/getMe", timeout=15).json()
+        via = "" if cfg.telegram_api_base == "https://api.telegram.org" else f" via {cfg.telegram_api_base}"
+        r = httpx.get(f"{cfg.telegram_api_base}/bot{cfg.telegram_token}/getMe", timeout=30).json()
         if r.get("ok"):
-            report("OK", "Telegram", f"bot @{r['result']['username']}, owner id {cfg.telegram_owner_id}")
+            report("OK", "Telegram", f"bot @{r['result']['username']}, owner id {cfg.telegram_owner_id}{via}")
+        elif r.get("error_code") == 429:
+            report("FAIL", "Telegram", f"Telegram is rate-limiting this server{via} ({r.get('description')}). "
+                   "See README: Telegram relay")
         else:
             report("FAIL", "Telegram", r.get("description", "token rejected"))
     except Exception as exc:
@@ -69,10 +73,14 @@ def check_gemini(cfg) -> None:
     try:
         from google import genai
 
+        from .pipeline.judge import resolve_gemini_model
+
         # Keep a reference: the SDK closes its HTTP client when the Client object is freed.
         client = genai.Client(api_key=cfg.gemini_api_key)
-        resp = client.models.generate_content(model=cfg.gemini_model, contents="Reply with the word ok.")
-        report("OK", "Gemini", f"{cfg.gemini_model} answered: {(resp.text or '').strip()[:20]}")
+        model = resolve_gemini_model(client, cfg.gemini_model)
+        resp = client.models.generate_content(model=model, contents="Reply with the word ok.")
+        note = "" if model == cfg.gemini_model else f" ({cfg.gemini_model} unavailable, auto-picked)"
+        report("OK", "Gemini", f"{model}{note} answered: {(resp.text or '').strip()[:20]}")
     except Exception as exc:
         report("FAIL", "Gemini", f"{cfg.gemini_model}: {str(exc)[:200]}")
 

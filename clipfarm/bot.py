@@ -160,7 +160,17 @@ def main() -> None:
     if not cfg.telegram_enabled:
         raise SystemExit("Set TELEGRAM_BOT_TOKEN and TELEGRAM_OWNER_ID in .env")
 
-    app = Application.builder().token(cfg.telegram_token).build()
+    app = (
+        Application.builder()
+        .token(cfg.telegram_token)
+        .base_url(f"{cfg.telegram_api_base}/bot")
+        .base_file_url(f"{cfg.telegram_api_base}/file/bot")
+        .connect_timeout(30)
+        .read_timeout(60)
+        .write_timeout(60)
+        .get_updates_read_timeout(60)
+        .build()
+    )
     app.bot_data["cfg"] = cfg
     app.bot_data["db"] = dbm.Database(cfg.db_path)
 
