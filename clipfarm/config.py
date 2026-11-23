@@ -97,7 +97,8 @@ class Config:
 
 
 def load_config(env_file: str | None = None) -> Config:
-    load_dotenv(env_file or ".env")
+    # .env wins over leftovers in the shell (e.g. after `set -a; . ./.env`), so edits take effect.
+    load_dotenv(env_file or ".env", override=True)
     data_dir = Path(_str("DATA_DIR", "./data")).resolve()
     cfg = Config(
         telegram_token=_str("TELEGRAM_BOT_TOKEN"),
