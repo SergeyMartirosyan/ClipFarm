@@ -22,7 +22,7 @@ Telegram link ─► yt-dlp ─► transcript ─► signals + LLM judge ─► 
 | 4. Render: boundary snapping, layout detection, burned captions, preview, R2 | ✅ |
 | 5. Telegram approval (Post / Edit title / Skip / Undo) | ✅ |
 | 6. Posting scheduler + YouTube / TikTok / Instagram uploaders | ⏳ next |
-| 7. Oracle VM setup script + systemd services | ⏳ |
+| 7. VM setup script, systemd services, self-check | ✅ |
 | Twitch signals: viewer clips (Helix API) + chat replay bursts and emotes | ✅ |
 | Gemini watching candidate clips (visual re-scoring), laughter/scream detection | ⏳ |
 
@@ -39,7 +39,21 @@ Telegram link ─► yt-dlp ─► transcript ─► signals + LLM judge ─► 
 | Layout | OpenCV **YuNet** face detection on 12 frames: small steady webcam face → `facecam` (cam 40% top / game 60% bottom); big face → `face` (9:16 crop on the speaker); else → `blur` (full frame over a blurred copy). Per-channel overrides in `presets.json`. |
 | Captions | Whisper word timestamps on the clip, 3-word uppercase groups, the spoken word highlighted, burned in with ffmpeg/libass |
 
-## Setup (local or on the VM)
+## Install on the VM (one command)
+
+On an Ubuntu 22.04/24.04 VM (Oracle Cloud Ampere A1 works):
+
+```bash
+git clone -b ccr-88cfe239-u91cgv https://github.com/SergeyMartirosyan/ClipFarm.git
+cd ClipFarm
+./deploy/setup.sh                       # ffmpeg, Python env, models, systemd services
+nano .env                               # paste your keys (see below)
+.venv/bin/python -m clipfarm.check      # checks every tool and key, says what's wrong
+sudo systemctl restart clipfarm-bot clipfarm-worker
+journalctl -u clipfarm-worker -f        # watch a job run
+```
+
+## Manual setup (local or on the VM)
 
 Requirements: Python 3.10+, `ffmpeg` (with libass), and a font such as DejaVu Sans (`fonts-dejavu-core` on Ubuntu).
 

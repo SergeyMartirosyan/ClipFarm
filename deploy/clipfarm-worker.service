@@ -1,0 +1,18 @@
+[Unit]
+Description=ClipFarm worker (download, pick, render)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=__USER__
+WorkingDirectory=__APP_DIR__
+ExecStart=__APP_DIR__/.venv/bin/python -m clipfarm.worker
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+# A job interrupted by a restart is re-queued automatically.
+TimeoutStopSec=30
+Nice=5
+
+[Install]
+WantedBy=multi-user.target
