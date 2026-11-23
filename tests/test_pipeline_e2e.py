@@ -107,7 +107,7 @@ def test_full_pipeline(tmp_path, monkeypatch, source_video):
     assert second.candidate.signal_score > first.candidate.signal_score
     # Work directory is cleaned up; final clips are kept.
     assert not (cfg.work_dir / f"job-{job_id}").exists()
-    assert (cfg.clips_dir / f"job-{job_id}" / "clip-01.mp4").exists()
+    assert (cfg.clips_dir / f"job-{job_id}" / "try-1" / "clip-01.mp4").exists()
 
 
 def test_blur_layout_render(tmp_path, source_video):

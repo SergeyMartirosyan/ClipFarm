@@ -95,18 +95,21 @@ Without Telegram (for testing):
 .venv/bin/python -m clipfarm.cli cleanup
 ```
 
-## Telegram relay (only if Telegram blocks your server)
+## Telegram troubleshooting
 
-Some cloud IPs or regions get throttled by Telegram: `clipfarm.check` then reports a timeout or
-"Telegram is rate-limiting this server". Route the bot through a free Cloudflare Worker:
+`python -m clipfarm.check` prints the bot id it used and what Telegram answered.
 
-1. dash.cloudflare.com → **Workers & Pages** → **Create** → **Create Worker** → name it (e.g. `tg-relay`) → **Deploy**.
-2. **Edit code**, replace everything with `deploy/telegram-relay.js`, **Deploy**.
-3. Copy the worker URL (e.g. `https://tg-relay.yourname.workers.dev`) into `.env`:
-   `TELEGRAM_API_BASE=https://tg-relay.yourname.workers.dev`
-4. Run `.venv/bin/python -m clipfarm.check`; Telegram should show ✅ "via …workers.dev".
-
-The free Workers plan allows 100,000 requests a day; the bot uses a few thousand.
+- **429 "retry after N" on getMe, or a ~30 s hang then 429**: Telegram is refusing to *log the bot in*.
+  This is tied to the bot or the owner account, not to your server, network or IP, so a relay or another
+  server won't help. Every request after the countdown makes Telegram try the login again, so stop the
+  bot and the checks (`sudo systemctl stop clipfarm-bot clipfarm-worker`), wait a few hours, then run
+  the check once. If it persists: ask @SpamBot whether the account is limited, report it to @BotSupport,
+  or create the bot from another Telegram account (`TELEGRAM_OWNER_ID` is who may *use* the bot, not who created it).
+  The bot itself backs off on its own (60 s doubling to 30 min) instead of restarting in a loop.
+- **401 Unauthorized**: wrong or revoked token, or an old token still exported in your shell.
+- **Your network blocks api.telegram.org** (connection errors while other sites work): route through a
+  Cloudflare Worker. Create a Worker, paste `deploy/telegram-relay.js`, deploy, and set
+  `TELEGRAM_API_BASE=https://<worker>.workers.dev` in `.env`.
 
 ## Storage
 

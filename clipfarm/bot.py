@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import re
 import time
 
@@ -18,6 +19,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 from . import db as dbm
 from . import messages
 from .config import load_config
+from .logsetup import setup_logging
 
 log = logging.getLogger("clipfarm.bot")
 
@@ -101,12 +103,18 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     for url in urls:
-        job_id = db.add_job(url, msg.chat_id)
+        # 'new' until the status message exists, so the worker can't claim the job and post a
+        # second status message while Telegram is slow to answer this reply.
+        job_id = db.add_job(url, msg.chat_id, status=dbm.NEW)
         pos = db.queue_position(job_id)
-        job = db.get_job(job_id)
+        shown = dict(db.get_job(job_id)) | {"status": dbm.QUEUED}
         detail = "next up" if pos <= 1 else f"position {pos}"
-        reply = await msg.reply_text(messages.job_text(job, detail), disable_web_page_preview=True)
-        db.update_job(job_id, status_message_id=reply.message_id)
+        message_id = None
+        try:
+            reply = await msg.reply_text(messages.job_text(shown, detail), disable_web_page_preview=True)
+            message_id = reply.message_id
+        finally:
+            db.update_job(job_id, status=dbm.QUEUED, status_message_id=message_id)
 
 
 async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -127,6 +135,9 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     if clip["status"] == dbm.POSTED:
         await q.answer("Already posted.")
+        return
+    if clip["status"] == dbm.SUPERSEDED:
+        await q.answer("This clip is from an interrupted run; the job was re-run, see the newer clips.", show_alert=True)
         return
 
     if action == "title":
@@ -156,31 +167,40 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         log.info("Message edit failed: %s", exc)
 
 
-def wait_for_telegram(cfg) -> str:
-    """Block until Telegram accepts the token, honouring its retry_after. Crashing instead would make
-    systemd restart the bot every few seconds, and that restart loop is what gets a bot rate-limited."""
-    delay = 15
+def wait_for_telegram(cfg, sleep=time.sleep) -> str:
+    """Block until Telegram has logged the bot in, then return its username.
+
+    A 429 on getMe means Telegram refused to log the bot in; a ~30 s hang is a login attempt in
+    progress. Each request made after the countdown ends starts a new login, so probes are spaced
+    out: max(retry_after, delay) with delay doubling 60 s -> 30 min, plus jitter. Exiting instead
+    would let systemd restart the bot every few seconds and keep the bot locked out."""
+    delay = 60.0
     while True:
+        why = ""
+        retry_after = 0
         try:
-            body = httpx.get(f"{cfg.telegram_api_base}/bot{cfg.telegram_token}/getMe", timeout=60).json()
+            resp = httpx.get(f"{cfg.telegram_api_base}/bot{cfg.telegram_token}/getMe", timeout=90)
+            body = resp.json()
             if body.get("ok"):
                 return body["result"]["username"]
             if body.get("error_code") == 401:
-                log.error("Telegram rejected TELEGRAM_BOT_TOKEN (401). Fix .env; retrying in 10 minutes.")
-                wait = 600
+                why = "token rejected (401): fix TELEGRAM_BOT_TOKEN in .env"
+                retry_after = 600
             else:
-                wait = (body.get("parameters") or {}).get("retry_after") or delay
-                log.warning("Telegram: %s. Waiting %ss before trying again.", body.get("description"), wait)
-        except (httpx.HTTPError, ValueError) as exc:
-            wait = delay
-            log.warning("Telegram unreachable (%s). Waiting %ss.", exc.__class__.__name__, wait)
-        time.sleep(min(int(wait), 600) + 1)
-        delay = min(delay * 2, 600)
+                why = str(body.get("description"))
+                retry_after = int((body.get("parameters") or {}).get("retry_after") or 0)
+        except httpx.HTTPError as exc:
+            why = f"no answer ({exc.__class__.__name__}): Telegram may be logging the bot in"
+        except ValueError:
+            why = "reply was not from Telegram (check TELEGRAM_API_BASE)"
+        wait = max(retry_after, delay) * random.uniform(1.0, 1.1)
+        log.warning("Telegram not ready: %s. Next try in %.0fs.", why, wait)
+        sleep(wait)
+        delay = min(delay * 2, 1800.0)
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    logging.getLogger("httpx").setLevel(logging.WARNING)  # it logs every poll, including the token URL
+    setup_logging()
     cfg = load_config()
     if not cfg.telegram_enabled:
         raise SystemExit("Set TELEGRAM_BOT_TOKEN and TELEGRAM_OWNER_ID in .env")

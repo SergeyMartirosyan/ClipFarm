@@ -16,7 +16,12 @@ def _str(name: str, default: str = "") -> str:
 
 def _int(name: str, default: int) -> int:
     raw = _str(name)
-    return int(raw) if raw else default
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise SystemExit(f"{name} in .env must be a whole number, got {raw!r}") from None
 
 
 def _float(name: str, default: float) -> float:

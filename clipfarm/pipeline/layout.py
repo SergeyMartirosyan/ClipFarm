@@ -77,8 +77,12 @@ def face_layout(face_cx: float, fw: int, fh: int) -> Layout:
 
 def preset_layout(preset: dict, fw: int, fh: int) -> Layout:
     def box(v) -> Box:
-        x, y, w, h = v
-        return Box(_even(x * fw), _even(y * fh), _even(w * fw), _even(h * fh))
+        x, y, w, h = (min(max(float(n), 0.0), 1.0) for n in v)
+        bw, bh = _even(max(w, 0.02) * fw), _even(max(h, 0.02) * fh)
+        bw, bh = min(bw, fw - fw % 2), min(bh, fh - fh % 2)
+        bx = min(_even(x * fw) if x > 0 else 0, fw - bw)
+        by = min(_even(y * fh) if y > 0 else 0, fh - bh)
+        return Box(max(bx, 0), max(by, 0), bw, bh)
 
     return Layout("facecam", cam=box(preset["cam"]), main=box(preset["game"]))
 

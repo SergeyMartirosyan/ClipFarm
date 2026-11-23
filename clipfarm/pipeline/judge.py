@@ -289,7 +289,12 @@ class Judge:
         from google import genai
 
         if self._client is None:
-            self._client = genai.Client(api_key=self.cfg.gemini_api_key)
+            from google.genai import types
+
+            # Without a timeout a stalled connection would hang the (single) worker forever.
+            self._client = genai.Client(
+                api_key=self.cfg.gemini_api_key, http_options=types.HttpOptions(timeout=300_000)
+            )
         return self._client
 
     def _gemini_chain(self) -> list[str]:

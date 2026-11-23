@@ -51,9 +51,9 @@ class R2:
         return deleted
 
 
-def clip_key(job_id: int, idx: int, created: float | None = None) -> str:
+def clip_key(job_id: int, idx: int, attempt: int = 1, created: float | None = None) -> str:
     day = time.strftime("%Y-%m-%d", time.gmtime(created or time.time()))
-    return f"clips/{day}/job-{job_id}/clip-{idx:02d}.mp4"
+    return f"clips/{day}/job-{job_id}/try-{attempt}/clip-{idx:02d}.mp4"
 
 
 def cleanup_local(clips_dir: Path, days: int) -> int:

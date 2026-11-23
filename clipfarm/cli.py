@@ -12,6 +12,7 @@ import logging
 
 from . import db as dbm
 from .config import load_config
+from .logsetup import setup_logging
 from .pipeline.run import process
 from .pipeline.transcribe import Transcriber
 from .storage import R2, cleanup_local
@@ -59,7 +60,7 @@ def cmd_cleanup(_args) -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    setup_logging()
     parser = argparse.ArgumentParser(prog="clipfarm")
     sub = parser.add_subparsers(dest="cmd", required=True)
 

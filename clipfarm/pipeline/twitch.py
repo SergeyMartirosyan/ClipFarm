@@ -91,7 +91,7 @@ class Helix:
         if self._token is None:
             r = self.http.post(
                 TOKEN_URL,
-                params={
+                data={
                     "client_id": self.client_id,
                     "client_secret": self.client_secret,
                     "grant_type": "client_credentials",

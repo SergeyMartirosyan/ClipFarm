@@ -75,7 +75,7 @@ class Verdict:
     visual: int
     hook: int
     menu_or_idle: bool
-    rank: int  # 0 = best
+    rank: int | None  # 0 = best; None when the model didn't rank this clip
 
 
 def sample_frames(video: Path, start: float, end: float, n: int = FRAMES_PER_CLIP) -> list[bytes]:
@@ -138,7 +138,7 @@ def parse_verdicts(raw: str | dict, count: int) -> dict[int, Verdict]:
             visual=_clamp(item.get("visual")),
             hook=_clamp(item.get("hook")),
             menu_or_idle=bool(item.get("menu_or_idle", False)),
-            rank=rank_of.get(cid, len(seen)),
+            rank=rank_of.get(cid),
         )
     return out
 
@@ -152,7 +152,7 @@ def _clamp(v) -> int:
 
 def apply_verdicts(candidates: list[Candidate], verdicts: dict[int, Verdict]) -> None:
     """Fold the review into each candidate's score. Unreviewed candidates are left untouched."""
-    ranked = max(1, len(verdicts) - 1)
+    ranked = max(1, sum(1 for v in verdicts.values() if v.rank is not None) - 1)
     for i, c in enumerate(candidates):
         v = verdicts.get(i)
         if v is None:
@@ -162,7 +162,7 @@ def apply_verdicts(candidates: list[Candidate], verdicts: dict[int, Verdict]) ->
         c.menu_or_idle = v.menu_or_idle
         c.vision_note = v.what_happens
         # Best +1.0 … worst -1.0, linear in rank.
-        c.rank_bonus = 1.0 - 2.0 * min(v.rank, ranked) / ranked if len(verdicts) > 1 else 0.0
+        c.rank_bonus = 0.0 if v.rank is None or ranked < 1 or len(verdicts) < 2 else 1.0 - 2.0 * min(v.rank, ranked) / ranked
 
 
 class VisionReviewer:

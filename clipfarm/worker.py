@@ -8,11 +8,13 @@ from __future__ import annotations
 import logging
 import signal
 import time
+from pathlib import Path
 
 from . import db as dbm
 from . import messages
 from .config import load_config
-from .notify import Telegram, TelegramError
+from .logsetup import setup_logging
+from .notify import Telegram, TelegramError, TelegramUnavailable
 from .pipeline.judge import JudgeBudgetExceeded
 from .pipeline.run import RenderedClip, process
 from .pipeline.transcribe import Transcriber
@@ -33,6 +35,7 @@ class Worker:
         )
         self.running = True
         self.last_cleanup = 0.0
+        self.stale_status: dict[int, tuple[str, str]] = {}
 
     # -- telegram helpers (never let a Telegram hiccup fail a job) ----------------
 
@@ -40,7 +43,12 @@ class Worker:
         return int(job["chat_id"] or self.cfg.telegram_owner_id)
 
     def _show_status(self, job_id: int, detail: str = "", extra: str = "") -> None:
+        """Edit the job's status message. While Telegram is unavailable, remember the latest
+        status instead; it is pushed once Telegram answers again (flush_telegram)."""
         if not self.tg:
+            return
+        if not self.tg.available:
+            self.stale_status[job_id] = (detail, extra)
             return
         job = self.db.get_job(job_id)
         text = messages.job_text(job, detail, extra)
@@ -50,22 +58,48 @@ class Worker:
             else:
                 mid = self.tg.send_message(self._chat(job), text)
                 self.db.update_job(job_id, status_message_id=mid)
+            self.stale_status.pop(job_id, None)
+        except TelegramUnavailable:
+            self.stale_status[job_id] = (detail, extra)
         except (TelegramError, OSError) as exc:
             log.warning("Status update failed: %s", exc)
 
-    def _send_clip(self, job, clip_id: int, rendered: RenderedClip) -> None:
-        if not self.tg:
-            return
-        row = self.db.get_clip(clip_id)
-        caption = messages.clip_caption(row)
-        keyboard = messages.buttons_as_json(messages.clip_buttons(row))
+    def _deliver(self, clip) -> bool:
+        """Send one clip for review. False = Telegram is unavailable, stop delivering for now."""
+        caption = messages.clip_caption(clip)
+        keyboard = messages.buttons_as_json(messages.clip_buttons(clip))
+        chat = int(clip["chat_id"] or self.cfg.telegram_owner_id)
+        final = Path(clip["local_path"] or "")
+        preview = final.with_name(final.stem + ".preview.mp4")
         try:
-            mid = self.tg.send_video(self._chat(job), rendered.preview_path, caption, keyboard)
+            mid = self.tg.send_video(chat, preview, caption, keyboard)
+        except TelegramUnavailable:
+            return False
         except (TelegramError, OSError) as exc:
-            log.warning("Video upload to Telegram failed (%s); sending text instead", exc)
-            link = rendered.public_url or str(rendered.final_path)
-            mid = self.tg.send_message(self._chat(job), f"{caption}\n\n▶️ {link}", keyboard)
-        self.db.update_clip(clip_id, telegram_message_id=mid)
+            log.warning("Video upload for clip %s failed (%s); sending text instead", clip["id"], exc)
+            link = clip["public_url"] or str(final)
+            try:
+                mid = self.tg.send_message(chat, f"{caption}\n\n▶️ {link}", keyboard)
+            except TelegramUnavailable:
+                return False
+            except (TelegramError, OSError) as exc2:
+                log.warning("Could not deliver clip %s: %s", clip["id"], exc2)
+                self.db.update_clip(clip["id"], deliver_attempts=clip["deliver_attempts"] + 1)
+                return True
+        self.db.update_clip(clip["id"], telegram_message_id=mid)
+        return True
+
+    def flush_telegram(self) -> None:
+        """Push stale status messages and undelivered clips, while Telegram is reachable."""
+        if not self.tg or not self.tg.available:
+            return
+        for job_id, (detail, extra) in list(self.stale_status.items()):
+            self._show_status(job_id, detail, extra)
+            if not self.tg.available:
+                return
+        for clip in self.db.undelivered_clips():
+            if not self._deliver(clip):
+                return
 
     # -- job ------------------------------------------------------------------------
 
@@ -77,6 +111,7 @@ class Worker:
         def on_status(status: str, detail: str) -> None:
             self.db.update_job(job_id, status=status)
             self._show_status(job_id, detail)
+            self.flush_telegram()
 
         def on_source(src) -> None:
             self.db.update_job(job_id, source_title=src.title, uploader=src.uploader, duration=src.duration)
@@ -91,14 +126,15 @@ class Worker:
                 judge_model=c.model, layout=rc.layout, local_path=str(rc.final_path),
                 r2_key=rc.r2_key, public_url=rc.public_url,
             )
-            self._send_clip(job, clip_id, rc)
             sent += 1
+            self.flush_telegram()  # delivers this clip, plus any that failed earlier
 
         try:
             process(
                 job["url"], job_id, self.cfg,
                 transcriber=self.transcriber, db=self.db,
                 on_status=on_status, on_clip=on_clip, on_source=on_source,
+                attempt=int(job["attempts"] or 1),
             )
         except JudgeBudgetExceeded as exc:
             self._fail(job_id, f"{exc}. Gemini was unavailable; send the link again later.")
@@ -135,6 +171,7 @@ class Worker:
         while self.running:
             if time.time() - self.last_cleanup > CLEANUP_EVERY:
                 self.cleanup()
+            self.flush_telegram()
             job = self.db.claim_next_job()
             if job is None:
                 time.sleep(5)
@@ -147,7 +184,7 @@ class Worker:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    setup_logging()
     worker = Worker()
     signal.signal(signal.SIGTERM, worker.stop)
     signal.signal(signal.SIGINT, worker.stop)

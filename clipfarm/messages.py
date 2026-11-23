@@ -20,6 +20,7 @@ DECISION_NOTE = {
     dbm.APPROVED: "✅ Approved: queued for posting",
     dbm.SKIPPED: "⏭ Skipped",
     dbm.POSTED: "📤 Posted",
+    dbm.SUPERSEDED: "♻️ Replaced by a re-run",
 }
 
 

@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     duration          REAL,
     chat_id           INTEGER,
     status_message_id INTEGER,
+    attempts          INTEGER NOT NULL DEFAULT 0,
     created_at        REAL NOT NULL,
     updated_at        REAL NOT NULL
 );
@@ -44,6 +45,7 @@ CREATE TABLE IF NOT EXISTS clips (
     public_url          TEXT,
     status              TEXT NOT NULL DEFAULT 'pending_review',
     telegram_message_id INTEGER,
+    deliver_attempts    INTEGER NOT NULL DEFAULT 0,
     created_at          REAL NOT NULL,
     decided_at          REAL
 );
@@ -67,8 +69,10 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_clips_status ON clips(status);
 """
 
-# Job statuses, in pipeline order.
+# Job statuses, in pipeline order. 'new' = being announced by the bot, not yet claimable.
+NEW = "new"
 QUEUED = "queued"
+MAX_ATTEMPTS = 2  # a job that kills the worker twice (e.g. out of memory) is failed, not retried forever
 ACTIVE_STATUSES = ("downloading", "transcribing", "analyzing", "rendering")
 DONE = "done"
 FAILED = "failed"
@@ -78,6 +82,7 @@ PENDING_REVIEW = "pending_review"
 APPROVED = "approved"
 SKIPPED = "skipped"
 POSTED = "posted"
+SUPERSEDED = "superseded"  # from an interrupted run of a job that was re-run
 
 
 class Database:
@@ -90,6 +95,11 @@ class Database:
             cols = {r[1] for r in con.execute("PRAGMA table_info(clips)")}
             if "vision_note" not in cols:
                 con.execute("ALTER TABLE clips ADD COLUMN vision_note TEXT NOT NULL DEFAULT ''")
+            if "deliver_attempts" not in cols:
+                con.execute("ALTER TABLE clips ADD COLUMN deliver_attempts INTEGER NOT NULL DEFAULT 0")
+            job_cols = {r[1] for r in con.execute("PRAGMA table_info(jobs)")}
+            if "attempts" not in job_cols:
+                con.execute("ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -106,12 +116,12 @@ class Database:
 
     # ---- jobs ---------------------------------------------------------------
 
-    def add_job(self, url: str, chat_id: int | None = None) -> int:
+    def add_job(self, url: str, chat_id: int | None = None, status: str = QUEUED) -> int:
         now = time.time()
         with self.connect() as con:
             cur = con.execute(
-                "INSERT INTO jobs (url, chat_id, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                (url, chat_id, now, now),
+                "INSERT INTO jobs (url, chat_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (url, chat_id, status, now, now),
             )
             return int(cur.lastrowid)
 
@@ -120,7 +130,7 @@ class Database:
         with self.connect() as con:
             return con.execute(
                 """
-                UPDATE jobs SET status = 'downloading', updated_at = ?
+                UPDATE jobs SET status = 'downloading', attempts = attempts + 1, updated_at = ?
                 WHERE id = (SELECT id FROM jobs WHERE status = 'queued' ORDER BY id LIMIT 1)
                 RETURNING *
                 """,
@@ -128,12 +138,33 @@ class Database:
             ).fetchone()
 
     def requeue_stuck_jobs(self) -> int:
-        """After a worker crash/restart, put half-finished jobs back in the queue."""
+        """After a worker crash/restart: re-queue half-finished jobs (their unreviewed clips from the
+        interrupted run are superseded), fail jobs that already died MAX_ATTEMPTS times, and release
+        jobs the bot never finished announcing."""
         placeholders = ",".join("?" for _ in ACTIVE_STATUSES)
+        now = time.time()
         with self.connect() as con:
+            stuck = [r["id"] for r in con.execute(
+                f"SELECT id FROM jobs WHERE status IN ({placeholders})", ACTIVE_STATUSES)]
+            if stuck:
+                qs = ",".join("?" for _ in stuck)
+                con.execute(
+                    f"UPDATE clips SET status = 'superseded' WHERE status = 'pending_review' AND job_id IN ({qs})",
+                    stuck,
+                )
+            con.execute(
+                f"UPDATE jobs SET status = 'failed', updated_at = ?, error = "
+                f"'The worker stopped twice while processing this job (out of memory? restart?). Send the link again to retry.' "
+                f"WHERE status IN ({placeholders}) AND attempts >= ?",
+                (now, *ACTIVE_STATUSES, MAX_ATTEMPTS),
+            )
             cur = con.execute(
                 f"UPDATE jobs SET status = 'queued', updated_at = ? WHERE status IN ({placeholders})",
-                (time.time(), *ACTIVE_STATUSES),
+                (now, *ACTIVE_STATUSES),
+            )
+            con.execute(
+                "UPDATE jobs SET status = 'queued', updated_at = ? WHERE status = 'new' AND created_at < ?",
+                (now, now - 300),
             )
             return cur.rowcount
 
@@ -154,9 +185,10 @@ class Database:
             return con.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
 
     def queue_position(self, job_id: int) -> int:
+        """1 = next up. Counts this job even while it is still 'new'."""
         with self.connect() as con:
             row = con.execute(
-                "SELECT COUNT(*) FROM jobs WHERE status = 'queued' AND id <= ?", (job_id,)
+                "SELECT COUNT(*) FROM jobs WHERE status IN ('queued', 'new') AND id <= ?", (job_id,)
             ).fetchone()
             return int(row[0])
 
@@ -180,6 +212,18 @@ class Database:
     def get_clip(self, clip_id: int) -> sqlite3.Row | None:
         with self.connect() as con:
             return con.execute("SELECT * FROM clips WHERE id = ?", (clip_id,)).fetchone()
+
+    def undelivered_clips(self, limit: int = 5, max_attempts: int = 3) -> list[sqlite3.Row]:
+        """Clips waiting for review that never reached Telegram (oldest first). Jobs started from
+        the CLI have no chat and are never pushed to Telegram."""
+        with self.connect() as con:
+            return con.execute(
+                "SELECT clips.*, jobs.chat_id AS chat_id FROM clips JOIN jobs ON jobs.id = clips.job_id "
+                "WHERE clips.status = 'pending_review' AND clips.telegram_message_id IS NULL "
+                "AND clips.deliver_attempts < ? AND jobs.chat_id IS NOT NULL "
+                "ORDER BY clips.id LIMIT ?",
+                (max_attempts, limit),
+            ).fetchall()
 
     def set_clip_decision(self, clip_id: int, status: str) -> None:
         self.update_clip(clip_id, status=status, decided_at=time.time())

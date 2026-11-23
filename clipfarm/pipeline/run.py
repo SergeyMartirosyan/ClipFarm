@@ -113,9 +113,11 @@ def process(
     on_clip: Callable[[RenderedClip], None] = lambda clip: None,
     on_source: Callable[[download.Source], None] = lambda src: None,
     keep_workdir: bool = False,
+    attempt: int = 1,
 ) -> list[RenderedClip]:
     workdir = cfg.work_dir / f"job-{job_id}"
-    outdir = cfg.clips_dir / f"job-{job_id}"
+    # A re-run (after a worker restart) gets its own folder: earlier clips may already be approved.
+    outdir = cfg.clips_dir / f"job-{job_id}" / f"try-{attempt}"
     workdir.mkdir(parents=True, exist_ok=True)
     outdir.mkdir(parents=True, exist_ok=True)
     try:
@@ -233,7 +235,7 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
 
         key = url_ = None
         if r2 is not None:
-            key = clip_key(job_id, i)
+            key = clip_key(job_id, i, attempt)
             try:
                 url_ = r2.upload(final, key, "video/mp4")
                 r2.upload_json(

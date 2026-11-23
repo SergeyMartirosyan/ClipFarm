@@ -1,16 +1,25 @@
 """Self-check: is everything this machine needs present and working?
 
-    python -m clipfarm.check
+    python -m clipfarm.check                 # everything
+    python -m clipfarm.check --no-telegram   # skip Telegram (while it is rate-limiting the bot)
 
 Each line is OK / WARN (works, but a feature is off) / FAIL (fix before starting).
-Makes one tiny request to each configured service; nothing is posted anywhere.
+What it sends: Telegram getMe; Gemini: list models + one tiny prompt (free tier); Claude: a model
+lookup (free, no tokens); Twitch: an app token request; R2: a bucket check. Nothing is posted.
+
+Don't run it in a loop while Telegram reports 429: every getMe after the countdown ends makes
+Telegram try to log the bot in again.
 """
 
 from __future__ import annotations
 
+import argparse
+import re
 import shutil
 import subprocess
 import sys
+import time
+from pathlib import Path
 
 import httpx
 
@@ -40,31 +49,63 @@ def check_models(cfg) -> None:
     ok = cfg.face_model_path.exists()
     report("OK" if ok else "WARN", "face model", str(cfg.face_model_path) if ok else "missing: run scripts/fetch_models.sh (blur layout only)")
     try:
-        from faster_whisper import WhisperModel
+        from faster_whisper.utils import download_model
 
-        WhisperModel(cfg.whisper_model, device="cpu", compute_type=cfg.whisper_compute_type, local_files_only=True)
+        download_model(cfg.whisper_model, local_files_only=True)  # finds the files, doesn't load them
         report("OK", f"Whisper {cfg.whisper_model}")
     except Exception:
         report("WARN", f"Whisper {cfg.whisper_model}", "not downloaded yet (downloads on first job)")
+
+
+TOKEN_RE = re.compile(r"^\d+:[A-Za-z0-9_-]{30,}$")
+LOCKED_OUT_ADVICE = (
+    "This is about the bot's login, not this server or network (a relay won't help). Stop the bot "
+    "(sudo systemctl stop clipfarm-bot clipfarm-worker), don't test Telegram for a few hours, then run "
+    "this check once. If it persists: ask @SpamBot whether your account is limited, report it to "
+    "@BotSupport, or create the bot from another Telegram account."
+)
 
 
 def check_telegram(cfg) -> None:
     if not cfg.telegram_token or not cfg.telegram_owner_id:
         report("FAIL", "Telegram", "set TELEGRAM_BOT_TOKEN and TELEGRAM_OWNER_ID")
         return
+    bot_id = cfg.telegram_token.split(":", 1)[0]
+    route = "" if cfg.telegram_api_base == "https://api.telegram.org" else f", via {cfg.telegram_api_base}"
+    who = f"bot id {bot_id}{route}"  # the part before ':' is public; the secret part is never printed
+    if not TOKEN_RE.match(cfg.telegram_token):
+        report("FAIL", "Telegram", f"{who}: token doesn't look like a bot token (expected 123456:ABC…). Check for spaces/quotes in .env")
+        return
+    started = time.time()
     try:
-        via = "" if cfg.telegram_api_base == "https://api.telegram.org" else f" via {cfg.telegram_api_base}"
-        r = httpx.get(f"{cfg.telegram_api_base}/bot{cfg.telegram_token}/getMe", timeout=30).json()
-        if r.get("ok"):
-            report("OK", "Telegram", f"bot @{r['result']['username']}, owner id {cfg.telegram_owner_id}{via}")
-        elif r.get("error_code") == 429:
-            report("FAIL", "Telegram", f"Telegram is rate-limiting this server{via} ({r.get('description')}). "
-                   "See README: Telegram relay")
-        else:
-            report("FAIL", "Telegram", r.get("description", "token rejected"))
-    except Exception as exc:
-        route = "direct" if cfg.telegram_api_base == "https://api.telegram.org" else f"via {cfg.telegram_api_base}"
-        report("FAIL", "Telegram", f"{exc.__class__.__name__}: {exc} ({route})")
+        resp = httpx.get(f"{cfg.telegram_api_base}/bot{cfg.telegram_token}/getMe", timeout=120)
+    except httpx.TimeoutException:
+        report("FAIL", "Telegram", f"{who}: no answer in {time.time() - started:.0f}s. Telegram does this while it "
+               "tries to log a bot in, usually followed by 429. " + LOCKED_OUT_ADVICE)
+        return
+    except httpx.HTTPError as exc:
+        report("FAIL", "Telegram", f"{who}: can't connect ({exc.__class__.__name__}: {exc})")
+        return
+    took = time.time() - started
+    try:
+        body = resp.json()
+    except ValueError:
+        report("FAIL", "Telegram", f"{who}: HTTP {resp.status_code} that isn't from Telegram "
+               f"({resp.text[:80]!r}). Check TELEGRAM_API_BASE.")
+        return
+    if body.get("ok"):
+        report("OK", "Telegram", f"bot @{body['result']['username']} ({who}), owner id {cfg.telegram_owner_id}, {took:.1f}s")
+    elif body.get("error_code") == 429:
+        retry = (body.get("parameters") or {}).get("retry_after")
+        report("FAIL", "Telegram", f"{who}: Telegram refuses to log this bot in right now (429, retry after {retry}s, "
+               f"answered in {took:.0f}s). " + LOCKED_OUT_ADVICE)
+    elif body.get("error_code") == 401:
+        report("FAIL", "Telegram", f"{who}: token rejected (401). Was it revoked, or is an old token still exported "
+               "in this shell? Compare the bot id with the one BotFather shows.")
+    elif body.get("error_code") == 404:
+        report("FAIL", "Telegram", f"{who}: 404 Not Found: malformed token or wrong TELEGRAM_API_BASE path.")
+    else:
+        report("FAIL", "Telegram", f"{who}: {body.get('error_code')} {body.get('description')}")
 
 
 def check_gemini(cfg) -> None:
@@ -77,7 +118,9 @@ def check_gemini(cfg) -> None:
         from .pipeline.judge import gemini_model_chain
 
         # Keep a reference: the SDK closes its HTTP client when the Client object is freed.
-        client = genai.Client(api_key=cfg.gemini_api_key)
+        from google.genai import types
+
+        client = genai.Client(api_key=cfg.gemini_api_key, http_options=types.HttpOptions(timeout=60_000))
         chain = gemini_model_chain(client, cfg.gemini_model)
     except Exception as exc:
         report("FAIL", "Gemini", f"key rejected or Google unreachable: {str(exc)[:200]}")
@@ -105,9 +148,8 @@ def check_claude(cfg) -> None:
     try:
         import anthropic
 
-        anthropic.Anthropic(api_key=cfg.anthropic_api_key).messages.create(
-            model=cfg.fallback_model, max_tokens=16, messages=[{"role": "user", "content": "Reply with ok."}]
-        )
+        # A model lookup checks the key and the model name without spending tokens.
+        anthropic.Anthropic(api_key=cfg.anthropic_api_key, timeout=30).models.retrieve(cfg.fallback_model)
         report("OK", "Claude fallback", f"{cfg.fallback_model}, cap ${cfg.fallback_monthly_cap_usd:.2f}/month")
     except Exception as exc:
         report("FAIL", "Claude fallback", str(exc)[:200])
@@ -154,11 +196,20 @@ def check_youtube_cookies(cfg) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(prog="clipfarm.check")
+    parser.add_argument("--no-telegram", action="store_true", help="skip the Telegram check")
+    args = parser.parse_args()
+    env = Path.cwd() / ".env"
+    if not env.exists():
+        print(f"⚠️  No .env in {Path.cwd()}: run this from the ClipFarm folder. Using environment variables only.\n")
     cfg = load_config()
-    print(f"ClipFarm self-check (data in {cfg.data_dir})\n")
+    print(f"ClipFarm self-check (settings: {env if env.exists() else 'environment'}, data in {cfg.data_dir})\n")
     check_tools()
     check_models(cfg)
-    check_telegram(cfg)
+    if args.no_telegram:
+        report("WARN", "Telegram", "skipped (--no-telegram)")
+    else:
+        check_telegram(cfg)
     check_gemini(cfg)
     check_claude(cfg)
     check_twitch(cfg)
