@@ -69,7 +69,7 @@ def test_full_pipeline(tmp_path, monkeypatch, source_video):
 
     captured = {}
 
-    def fake_pick(self, *, title, uploader, duration, transcript, zones):
+    def fake_pick(self, *, title, uploader, duration, transcript, zones, viewer_clips=None):
         captured["zones"] = zones
         captured["transcript"] = transcript
         return [

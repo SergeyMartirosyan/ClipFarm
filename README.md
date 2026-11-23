@@ -23,15 +23,16 @@ Telegram link ─► yt-dlp ─► transcript ─► signals + LLM judge ─► 
 | 5. Telegram approval (Post / Edit title / Skip / Undo) | ✅ |
 | 6. Posting scheduler + YouTube / TikTok / Instagram uploaders | ⏳ next |
 | 7. Oracle VM setup script + systemd services | ⏳ |
-| Extra signals: Twitch chat density, laughter/scream detection | ⏳ |
+| Twitch signals: viewer clips (Helix API) + chat replay bursts and emotes | ✅ |
+| Gemini watching candidate clips (visual re-scoring), laughter/scream detection | ⏳ |
 
 ## How clips are picked
 
 | Job | Tool |
 |---|---|
 | Transcript | YouTube English subtitles (json3) when available, otherwise **faster-whisper** `small.en` |
-| Audience signals | Loudness spikes vs. the surrounding minute (ffmpeg + numpy), YouTube "most replayed" heatmap |
-| Judge | **Gemini** (free tier) reads the full timestamped transcript plus hot zones and returns scored clips as JSON. Up to 3 tries, then **Claude Haiku 5.5** with the same prompt and schema. Fallback spend is logged and capped per month. |
+| Audience signals | **Twitch VODs:** clips viewers made (weighted by views, Helix API) and chat replay bursts with emote mood (KEKW = funny, Pog = hype, monkaS = shock), shifted 5 s earlier for chat delay. **YouTube:** "most replayed" heatmap. **All:** loudness spikes vs. the surrounding minute. Weights: viewer clips 2.0, chat 1.5, replay 1.5, loudness 1.0, or 0.5 when any audience signal exists. |
+| Judge | **Gemini** (free tier) reads the full timestamped transcript plus hot zones annotated with chat mood, and the list of viewer clip titles (which describe the on-screen action the transcript can't show), and returns scored clips as JSON. Up to 3 tries, then **Claude Haiku 5.5** with the same prompt and schema. Fallback spend is logged and capped per month. |
 | Taste learning | Your 5 latest approved and 5 latest skipped clips are added to the prompt as examples |
 | Clean cuts | Start/end snap to sentence boundaries, then to shot cuts within 0.8 s (ffmpeg scene detection); length forced into 20–60 s |
 | Ranking | `final = 0.5 × LLM score + 0.5 × signal strength`, non-overlapping, top N |
@@ -56,6 +57,7 @@ Fill in `.env` (all keys are described in `.env.example`):
 - `GEMINI_API_KEY`: from Google AI Studio (free).
 - `ANTHROPIC_API_KEY`: from console.anthropic.com. Optional, used only as the fallback. Also set a spend limit in the console.
 - `R2_*`: Cloudflare R2 bucket and keys. Optional; without them, clips stay local only.
+- `TWITCH_CLIENT_ID` / `TWITCH_CLIENT_SECRET`: free app at dev.twitch.tv/console/apps. Enables viewer clips for Twitch VODs. Chat replay needs no credentials (`TWITCH_CHAT=1`), but it uses Twitch's unofficial web endpoint: if Twitch changes it, jobs continue without chat and the status message says so.
 - `YTDLP_COOKIES`: a Netscape cookies file for YouTube. Usually needed from datacenter IPs ("Sign in to confirm you're not a bot").
 
 ## Run
@@ -108,7 +110,8 @@ clipfarm/
     ├── run.py         orchestrates one link end to end
     ├── download.py    yt-dlp: video, heatmap, English subtitles
     ├── transcribe.py  json3 parser, faster-whisper
-    ├── signals.py     loudness + heatmap → hot zones
+    ├── signals.py     loudness, heatmap, Twitch signals → weighted hot zones
+    ├── twitch.py      viewer clips (Helix) + chat replay (GQL) → signals
     ├── judge.py       prompt, schema, Gemini → Haiku fallback
     ├── select.py      boundary snapping, overlap removal
     ├── layout.py      face detection → facecam / face / blur

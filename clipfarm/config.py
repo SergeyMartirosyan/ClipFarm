@@ -54,6 +54,11 @@ class Config:
     # Download
     ytdlp_cookies: str
 
+    # Twitch signals
+    twitch_client_id: str
+    twitch_client_secret: str
+    twitch_chat: bool
+
     # Layout
     face_model_path: Path
     presets_path: Path
@@ -110,6 +115,9 @@ def load_config(env_file: str | None = None) -> Config:
         clip_max_seconds=_int("CLIP_MAX_SECONDS", 60),
         max_source_hours=_float("MAX_SOURCE_HOURS", 6.0),
         ytdlp_cookies=_str("YTDLP_COOKIES"),
+        twitch_client_id=_str("TWITCH_CLIENT_ID"),
+        twitch_client_secret=_str("TWITCH_CLIENT_SECRET"),
+        twitch_chat=_str("TWITCH_CHAT", "1").lower() not in {"0", "false", "no", "off"},
         face_model_path=Path(
             _str("FACE_MODEL_PATH", str(data_dir / "models" / "face_detection_yunet_2023mar.onnx"))
         ).resolve(),

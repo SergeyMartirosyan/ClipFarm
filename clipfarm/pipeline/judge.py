@@ -59,8 +59,15 @@ A great clip:
 Avoid: intros/outros, sponsor reads, "like and subscribe", dead air, moments that need earlier context, \
 and anything that only works with visuals you cannot infer from the transcript.
 
-Hot zones are seconds where the audience reacted (replay spikes, loud audio). They are hints, \
-not requirements: use them when the transcript around them supports a good clip.
+Hot zones are seconds where the audience reacted (viewer clips, chat bursts, replay spikes, loud \
+audio). Treat them as strong evidence of a moment, but not as cut points: a good clip starts with the \
+build-up a few seconds before the reaction and ends once the reaction lands.
+
+You only have the transcript, so you cannot see the screen. For streams and gaming, the best moments are \
+often visual (a clutch play, a fail, a jump scare, a glitch). Viewer clip titles and chat reactions \
+(KEKW/LUL = funny, Pog/W = hype, monkaS/WTF = shock) tell you what happened on screen: use them. \
+Moments real viewers clipped, especially popular ones, are proven; strongly prefer them, and borrow \
+the wording of a good viewer clip title when it fits.
 
 Scores are integers 0-10. Titles are short (max 70 characters), curiosity-driven, no clickbait lies, \
 no emojis. Hashtags: 3-5, lowercase, without the # sign. Reason: one sentence on why it works."""
@@ -110,6 +117,7 @@ def build_user_prompt(
     max_len: int,
     approved_examples: list[str],
     skipped_examples: list[str],
+    viewer_clips: list | None = None,
 ) -> str:
     parts = [
         f"Video title: {title or 'unknown'}",
@@ -123,9 +131,16 @@ def build_user_prompt(
         parts += ["", "The channel owner's taste, from past decisions:"]
         parts += [f"  APPROVED: {e}" for e in approved_examples]
         parts += [f"  SKIPPED: {e}" for e in skipped_examples]
+    if viewer_clips:
+        parts += ["", "Moments viewers clipped (start-end seconds, views, viewer's title), most viewed first:"]
+        parts += [f"  {c.offset:.0f}-{c.end:.0f}s  {c.views} views  \"{c.title}\"" for c in viewer_clips[:40]]
     if zones:
         parts += ["", "Hot zones (second, strength 0-1, why):"]
-        parts += [f"  {z.t:.0f}s  {z.score:.2f}  {', '.join(z.reasons) or 'combined'}" for z in zones]
+        for z in zones:
+            line = f"  {z.t:.0f}s  {z.score:.2f}  {', '.join(z.reasons) or 'combined'}"
+            if z.notes:
+                line += "  | " + "; ".join(z.notes)
+            parts.append(line)
     parts += ["", "Transcript:", transcript]
     return "\n".join(parts)
 
@@ -261,13 +276,14 @@ class Judge:
         duration: float,
         transcript: str,
         zones: list[HotZone],
+        viewer_clips: list | None = None,
     ) -> list[Candidate]:
         approved, skipped = taste_examples(self.db)
         want = max(self.cfg.clips_per_video + 4, int(self.cfg.clips_per_video * 1.5))
         prompt = build_user_prompt(
             title=title, uploader=uploader, duration=duration, transcript=transcript, zones=zones,
             want=want, min_len=self.cfg.clip_min_seconds, max_len=self.cfg.clip_max_seconds,
-            approved_examples=approved, skipped_examples=skipped,
+            approved_examples=approved, skipped_examples=skipped, viewer_clips=viewer_clips,
         )
 
         errors: list[str] = []

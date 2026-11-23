@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -11,7 +12,7 @@ from typing import Callable
 from ..db import Database
 from ..media import extract_audio, probe, scene_cuts
 from ..storage import R2, clip_key
-from . import captions, download, layout as layout_mod, render, select, signals, transcribe
+from . import captions, download, layout as layout_mod, render, select, signals, transcribe, twitch
 from .judge import Candidate, Judge
 
 log = logging.getLogger(__name__)
@@ -33,6 +34,53 @@ class RenderedClip:
 
 class PipelineError(RuntimeError):
     pass
+
+
+@dataclass
+class TwitchSignals:
+    clips: list[twitch.ViewerClip]
+    chat: twitch.ChatData | None
+    notes: list[str]  # what worked / what didn't, shown in the job status
+
+
+def fetch_twitch_signals(cfg, source: download.Source, duration: float) -> TwitchSignals | None:
+    """Viewer clips + chat replay for a Twitch VOD. Each part fails independently:
+    a missing signal makes picks weaker, never fails the job."""
+    vid = twitch.vod_id(source.url, source.video_id, source.extractor)
+    if not vid:
+        return None
+    out = TwitchSignals(clips=[], chat=None, notes=[])
+    if cfg.twitch_client_id and cfg.twitch_client_secret:
+        try:
+            out.clips = twitch.Helix(cfg.twitch_client_id, cfg.twitch_client_secret).vod_clips(vid)
+            out.notes.append(f"{len(out.clips)} viewer clips")
+        except Exception as exc:
+            log.warning("Twitch viewer clips unavailable: %s", exc)
+            out.notes.append("viewer clips failed")
+    else:
+        out.notes.append("viewer clips off (no TWITCH_CLIENT_ID)")
+    if cfg.twitch_chat:
+        try:
+            out.chat = twitch.ChatReplay().fetch(vid, duration)
+            out.notes.append(f"{out.chat.total} chat messages")
+        except Exception as exc:
+            log.warning("Twitch chat replay unavailable: %s", exc)
+            out.notes.append("chat replay failed")
+    return out
+
+
+def annotate_zones(zones: list[signals.HotZone], tw: TwitchSignals | None) -> None:
+    """Attach what chat said and which viewer clips cover each hot zone, for the judge."""
+    if tw is None:
+        return
+    for z in zones:
+        if tw.chat is not None:
+            summary = tw.chat.summary(z.t + twitch.CHAT_DELAY_SECONDS - 2)
+            if summary:
+                z.notes.append(summary)
+        near = sorted(twitch.clips_near(tw.clips, z.t - 5, z.t + 5), key=lambda c: c.views, reverse=True)
+        for c in near[:2]:
+            z.notes.append(f'viewer clip "{c.title}" ({c.views} views)')
 
 
 def process(
@@ -76,27 +124,43 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
 
     audio = extract_audio(source.video_path, workdir / "audio.wav") if vinfo.has_audio else None
 
-    # 2. Transcript -------------------------------------------------------------
-    on_status("transcribing", "using site subtitles" if source.subtitles_path else "running Whisper")
-    segments: list[transcribe.Segment] = []
-    if source.subtitles_path:
-        segments = transcribe.parse_json3(source.subtitles_path)
-    if len(segments) < 10 and audio is not None:
-        segments = transcriber.transcribe(audio)
-    if not segments:
-        raise PipelineError("No speech found; there's nothing for the judge to read.")
+    # Twitch chat/clips download over the network while Whisper uses the CPU.
+    with ThreadPoolExecutor(1) as pool:
+        tw_future = pool.submit(fetch_twitch_signals, cfg, source, duration)
+
+        # 2. Transcript ---------------------------------------------------------
+        on_status("transcribing", "using site subtitles" if source.subtitles_path else "running Whisper")
+        segments: list[transcribe.Segment] = []
+        if source.subtitles_path:
+            segments = transcribe.parse_json3(source.subtitles_path)
+        if len(segments) < 10 and audio is not None:
+            segments = transcriber.transcribe(audio)
+        if not segments:
+            raise PipelineError("No speech found; there's nothing for the judge to read.")
+
+        if not tw_future.done():
+            on_status("transcribing", "waiting for Twitch chat")
+        tw = tw_future.result()
 
     # 3. Signals + judge --------------------------------------------------------
-    on_status("analyzing", "")
+    extra: dict = {}
+    if tw is not None:
+        if tw.clips:
+            extra[signals.VIEWER_CLIPS] = twitch.viewer_clip_signal(tw.clips, int(duration) + 1)
+        if tw.chat is not None and tw.chat.total > 0:
+            extra[signals.CHAT] = twitch.chat_signal(tw.chat)
     loud = signals.loudness_per_second(audio) if audio is not None else None
-    sig = signals.build_signals(duration, loud, source.heatmap)
+    sig = signals.build_signals(duration, loud, source.heatmap, extra)
+    on_status("analyzing", "signals: " + sig.describe() + (f"; {', '.join(tw.notes)}" if tw else ""))
     zones = signals.hot_zones(sig)
+    annotate_zones(zones, tw)
     candidates = Judge(cfg, db).pick(
         title=source.title,
         uploader=source.uploader,
         duration=duration,
         transcript=transcribe.format_for_llm(segments),
         zones=zones,
+        viewer_clips=tw.clips if tw else None,
     )
 
     snapped: list[Candidate] = []
