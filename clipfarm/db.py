@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     chat_id           INTEGER,
     status_message_id INTEGER,
     attempts          INTEGER NOT NULL DEFAULT 0,
+    user_id           INTEGER,
+    user_name         TEXT NOT NULL DEFAULT '',
     created_at        REAL NOT NULL,
     updated_at        REAL NOT NULL
 );
@@ -46,6 +48,7 @@ CREATE TABLE IF NOT EXISTS clips (
     status              TEXT NOT NULL DEFAULT 'pending_review',
     telegram_message_id INTEGER,
     deliver_attempts    INTEGER NOT NULL DEFAULT 0,
+    decided_by          TEXT NOT NULL DEFAULT '',
     created_at          REAL NOT NULL,
     decided_at          REAL
 );
@@ -121,9 +124,15 @@ class Database:
                 con.execute("ALTER TABLE clips ADD COLUMN vision_note TEXT NOT NULL DEFAULT ''")
             if "deliver_attempts" not in cols:
                 con.execute("ALTER TABLE clips ADD COLUMN deliver_attempts INTEGER NOT NULL DEFAULT 0")
+            if "decided_by" not in cols:
+                con.execute("ALTER TABLE clips ADD COLUMN decided_by TEXT NOT NULL DEFAULT ''")
             job_cols = {r[1] for r in con.execute("PRAGMA table_info(jobs)")}
             if "attempts" not in job_cols:
                 con.execute("ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+            if "user_id" not in job_cols:
+                con.execute("ALTER TABLE jobs ADD COLUMN user_id INTEGER")
+            if "user_name" not in job_cols:
+                con.execute("ALTER TABLE jobs ADD COLUMN user_name TEXT NOT NULL DEFAULT ''")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -140,14 +149,24 @@ class Database:
 
     # ---- jobs ---------------------------------------------------------------
 
-    def add_job(self, url: str, chat_id: int | None = None, status: str = QUEUED) -> int:
+    def add_job(self, url: str, chat_id: int | None = None, status: str = QUEUED,
+                user_id: int | None = None, user_name: str = "") -> int:
         now = time.time()
         with self.connect() as con:
             cur = con.execute(
-                "INSERT INTO jobs (url, chat_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                (url, chat_id, status, now, now),
+                "INSERT INTO jobs (url, chat_id, status, user_id, user_name, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (url, chat_id, status, user_id, user_name, now, now),
             )
             return int(cur.lastrowid)
+
+    def waiting_jobs_of(self, user_id: int) -> int:
+        """Links this person has queued or in progress (for the per-person limit)."""
+        with self.connect() as con:
+            row = con.execute(
+                "SELECT COUNT(*) FROM jobs WHERE user_id = ? AND status NOT IN ('done', 'failed')", (user_id,)
+            ).fetchone()
+            return int(row[0])
 
     def claim_next_job(self) -> sqlite3.Row | None:
         """Atomically move the oldest queued job to 'downloading' and return it."""

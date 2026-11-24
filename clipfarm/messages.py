@@ -24,6 +24,14 @@ DECISION_NOTE = {
 }
 
 
+def _get(row: Mapping[str, Any], key: str, default: Any = "") -> Any:
+    try:
+        value = row[key]
+    except (KeyError, IndexError):
+        return default
+    return default if value is None else value
+
+
 def hms(seconds: float) -> str:
     s = int(round(seconds))
     h, rem = divmod(s, 3600)
@@ -36,6 +44,9 @@ def job_text(job: Mapping[str, Any], detail: str = "", extra: str = "") -> str:
     head = f"{JOB_STATUS.get(status, status)} · job #{job['id']}"
     if detail:
         head += f" ({detail})"
+    who = _get(job, "user_name")
+    if who:
+        head += f" · from {who}"
     lines = [head]
     if job["source_title"]:
         lines.append(job["source_title"])
@@ -87,6 +98,9 @@ def clip_caption(clip: Mapping[str, Any], posts=None, tz_name: str = "UTC") -> s
         lines.append(f"👁 {clip['vision_note']}")
     note = DECISION_NOTE.get(clip["status"])
     if note:
+        who = _get(clip, "decided_by")
+        if who and clip["status"] in (dbm.APPROVED, dbm.SKIPPED):
+            note += f" by {who}"
         lines += ["", note]
     if posts:
         lines += posts_lines(posts, tz_name)
@@ -114,5 +128,7 @@ HELP = (
     "Commands:\n"
     "/queue: recent jobs and their status\n"
     "/stats: clip counts and this month's fallback spend\n"
-    "/schedule: upcoming posts"
+    "/schedule: upcoming posts\n\n"
+    "In a group, just paste the link. To change a title, tap ✏️ and reply to the bot's question.\n"
+    "/chatid: show this chat's id (for TELEGRAM_CHAT_ID)"
 )

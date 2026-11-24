@@ -12,7 +12,7 @@ import time
 
 import httpx
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
@@ -24,7 +24,29 @@ from .logsetup import setup_logging
 log = logging.getLogger("clipfarm.bot")
 
 URL_RE = re.compile(r"https?://[^\s<>\"']+")
-AWAITING_TITLE = "awaiting_title_clip_id"
+AWAITING_TITLE = "awaiting_title:"  # + user id -> "clip_id:prompt_message_id"
+
+
+def report_chat(cfg, chat_id: int) -> int:
+    """Where a job's status, clips and posting reports go: the shared group if one is set."""
+    return int(cfg.telegram_chat_id or chat_id)
+
+
+def display_name(user) -> str:
+    if user is None:
+        return ""
+    return (user.first_name or user.username or str(user.id))[:40]
+
+
+def title_reply_target(pending: str | None, is_group: bool, reply_to_id: int | None) -> int | None:
+    """The clip whose title this message sets, or None. In a group only an actual reply to the
+    bot's question counts, so normal chatting never renames a clip by accident."""
+    if not pending:
+        return None
+    clip_id, _, prompt_id = pending.partition(":")
+    if is_group and (not prompt_id or reply_to_id != int(prompt_id)):
+        return None
+    return int(clip_id)
 
 
 def _markup(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup | None:
@@ -50,7 +72,8 @@ async def cmd_queue(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     for j in jobs:
         label = messages.JOB_STATUS.get(j["status"], j["status"])
         name = j["source_title"] or j["url"]
-        lines.append(f"#{j['id']} {label}: {name[:70]}")
+        who = f" ({j['user_name']})" if j["user_name"] else ""
+        lines.append(f"#{j['id']} {label}{who}: {name[:70]}")
     await update.effective_message.reply_text("\n".join(lines), disable_web_page_preview=True)
 
 
@@ -100,26 +123,31 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     db = _db(ctx)
+    cfg = ctx.bot_data["cfg"]
     msg = update.effective_message
+    user = update.effective_user
     text = msg.text or ""
     urls = URL_RE.findall(text)
+    is_group = msg.chat.type in ("group", "supergroup")
 
-    pending = db.kv_get(AWAITING_TITLE)
-    if pending and not urls:
-        clip_id = int(pending)
-        db.kv_set(AWAITING_TITLE, None)
+    key = AWAITING_TITLE + str(user.id)
+    clip_id = title_reply_target(db.kv_get(key), is_group,
+                                 msg.reply_to_message.message_id if msg.reply_to_message else None)
+    if clip_id is not None and not urls:
+        db.kv_set(key, None)
         new_title = " ".join(text.split())[:100]
         if not new_title:
             await msg.reply_text("Empty title, kept the old one.")
             return
         db.update_clip(clip_id, title=new_title)
         clip = db.get_clip(clip_id)
+        job = db.get_job(clip["job_id"]) if clip else None
         if clip and clip["telegram_message_id"]:
             try:
                 await ctx.bot.edit_message_caption(
-                    chat_id=msg.chat_id,
+                    chat_id=(job["chat_id"] if job and job["chat_id"] else msg.chat_id),
                     message_id=clip["telegram_message_id"],
-                    caption=messages.clip_caption(clip, db.posts_for_clip(clip_id), ctx.bot_data["cfg"].post_tz),
+                    caption=messages.clip_caption(clip, db.posts_for_clip(clip_id), cfg.post_tz),
                     reply_markup=_markup(messages.clip_buttons(clip)),
                 )
             except BadRequest as exc:  # e.g. the clip was sent as a text message
@@ -128,28 +156,44 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if not urls:
-        await msg.reply_text("Send me a video link (YouTube, Twitch VOD, Kick, …). /start for help.")
+        if not is_group:  # in a group, people just chat: stay quiet
+            await msg.reply_text("Send me a video link (YouTube, Twitch VOD, Kick, …). /start for help.")
         return
 
     for url in urls:
+        if user.id != cfg.telegram_owner_id and db.waiting_jobs_of(user.id) >= cfg.max_queued_per_user:
+            await msg.reply_text(f"You already have {cfg.max_queued_per_user} links waiting. "
+                                 "Send this one again when one of them is done.")
+            return
+        chat = report_chat(cfg, msg.chat_id)
         # 'new' until the status message exists, so the worker can't claim the job and post a
         # second status message while Telegram is slow to answer this reply.
-        job_id = db.add_job(url, msg.chat_id, status=dbm.NEW)
+        job_id = db.add_job(url, chat, status=dbm.NEW, user_id=user.id, user_name=display_name(user))
         pos = db.queue_position(job_id)
         shown = dict(db.get_job(job_id)) | {"status": dbm.QUEUED}
         detail = "next up" if pos <= 1 else f"position {pos}"
         message_id = None
         try:
-            reply = await msg.reply_text(messages.job_text(shown, detail), disable_web_page_preview=True)
-            message_id = reply.message_id
+            if chat == msg.chat_id:
+                sent = await msg.reply_text(messages.job_text(shown, detail), disable_web_page_preview=True)
+            else:
+                sent = await ctx.bot.send_message(chat, messages.job_text(shown, detail), disable_web_page_preview=True)
+                await msg.reply_text(f"Queued as job #{job_id}. Updates and clips go to the group.")
+            message_id = sent.message_id
         finally:
             db.update_job(job_id, status=dbm.QUEUED, status_message_id=message_id)
+
+
+async def cmd_chatid(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    note = "" if chat.type == "private" else "\nPut this in .env as TELEGRAM_CHAT_ID, then restart the bot and worker."
+    await update.effective_message.reply_text(f"Chat id: {chat.id} ({chat.type}){note}")
 
 
 async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
     cfg = ctx.bot_data["cfg"]
-    if q.from_user is None or q.from_user.id != cfg.telegram_owner_id:
+    if q.from_user is None or q.from_user.id not in cfg.allowed_user_ids:
         await q.answer("Not allowed.", show_alert=True)
         return
     db = _db(ctx)
@@ -170,9 +214,14 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if action == "title":
-        db.kv_set(AWAITING_TITLE, str(clip["id"]))
         await q.answer()
-        await q.message.reply_text(f"Send the new title for clip {clip['idx']}/{clip['total']}:")
+        prompt = await q.message.reply_text(
+            f"{q.from_user.mention_html()}, reply to this message with the new title for clip "
+            f"{clip['idx']}/{clip['total']}:",
+            parse_mode="HTML",
+            reply_markup=ForceReply(selective=True),
+        )
+        db.kv_set(AWAITING_TITLE + str(q.from_user.id), f"{clip['id']}:{prompt.message_id}")
         return
 
     new_status = {"ok": dbm.APPROVED, "skip": dbm.SKIPPED, "undo": dbm.PENDING_REVIEW}.get(action)
@@ -180,10 +229,11 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await q.answer()
         return
     if new_status == dbm.PENDING_REVIEW:
-        db.update_clip(clip["id"], status=new_status, decided_at=None)
+        db.update_clip(clip["id"], status=new_status, decided_at=None, decided_by="")
         db.cancel_posts(clip["id"])
     else:
         db.set_clip_decision(clip["id"], new_status)
+        db.update_clip(clip["id"], decided_by=display_name(q.from_user))
     answer = messages.DECISION_NOTE.get(new_status, "Back to review")
     if new_status == dbm.APPROVED:
         answer = schedule_clip(db, cfg, clip["id"]) or "✅ Approved (no platform connected yet)"
@@ -253,8 +303,9 @@ def main() -> None:
     app.bot_data["cfg"] = cfg
     app.bot_data["db"] = dbm.Database(cfg.db_path)
 
-    owner = filters.User(user_id=cfg.telegram_owner_id)
+    owner = filters.User(user_id=sorted(cfg.allowed_user_ids))  # owner + TELEGRAM_ALLOWED_USERS
     app.add_handler(CommandHandler(["start", "help"], cmd_start, filters=owner))
+    app.add_handler(CommandHandler("chatid", cmd_chatid, filters=owner))
     app.add_handler(CommandHandler("queue", cmd_queue, filters=owner))
     app.add_handler(CommandHandler("stats", cmd_stats, filters=owner))
     app.add_handler(CommandHandler("schedule", cmd_schedule, filters=owner))
@@ -262,7 +313,9 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(on_button))
 
     username = wait_for_telegram(cfg)
-    log.info("Bot @%s started; only user %s can use it", username, cfg.telegram_owner_id)
+    log.info("Bot @%s started; users allowed: %s; reports to %s", username,
+             ", ".join(str(u) for u in sorted(cfg.allowed_user_ids)),
+             f"group {cfg.telegram_chat_id}" if cfg.telegram_chat_id else "each person's own chat")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

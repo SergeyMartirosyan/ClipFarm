@@ -24,6 +24,14 @@ def _int(name: str, default: int) -> int:
         raise SystemExit(f"{name} in .env must be a whole number, got {raw!r}") from None
 
 
+def _int_list(name: str) -> tuple[int, ...]:
+    raw = _str(name).replace(",", " ").split()
+    try:
+        return tuple(int(x) for x in raw)
+    except ValueError:
+        raise SystemExit(f"{name} in .env must be numeric Telegram user ids separated by commas, got {_str(name)!r}") from None
+
+
 def _float(name: str, default: float) -> float:
     raw = _str(name)
     return float(raw) if raw else default
@@ -35,6 +43,9 @@ class Config:
     telegram_token: str
     telegram_owner_id: int
     telegram_api_base: str
+    telegram_allowed_users: tuple[int, ...]
+    telegram_chat_id: int
+    max_queued_per_user: int
 
     # Paths
     data_dir: Path
@@ -116,6 +127,11 @@ class Config:
         return ["instagram"] if self.instagram_access_token else []
 
     @property
+    def allowed_user_ids(self) -> set[int]:
+        """Who may use the bot: the owner plus TELEGRAM_ALLOWED_USERS."""
+        return {self.telegram_owner_id, *self.telegram_allowed_users} - {0}
+
+    @property
     def telegram_enabled(self) -> bool:
         return bool(self.telegram_token and self.telegram_owner_id)
 
@@ -128,6 +144,9 @@ def load_config(env_file: str | None = None) -> Config:
         telegram_token=_str("TELEGRAM_BOT_TOKEN"),
         telegram_owner_id=_int("TELEGRAM_OWNER_ID", 0),
         telegram_api_base=_str("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/"),
+        telegram_allowed_users=_int_list("TELEGRAM_ALLOWED_USERS"),
+        telegram_chat_id=_int("TELEGRAM_CHAT_ID", 0),
+        max_queued_per_user=_int("MAX_QUEUED_PER_USER", 2),
         data_dir=data_dir,
         local_retention_days=_int("LOCAL_RETENTION_DAYS", 10),
         gemini_api_key=_str("GEMINI_API_KEY"),

@@ -40,7 +40,7 @@ class Worker:
     # -- telegram helpers (never let a Telegram hiccup fail a job) ----------------
 
     def _chat(self, job) -> int:
-        return int(job["chat_id"] or self.cfg.telegram_owner_id)
+        return int(job["chat_id"] or self.cfg.telegram_chat_id or self.cfg.telegram_owner_id)
 
     def _show_status(self, job_id: int, detail: str = "", extra: str = "") -> None:
         """Edit the job's status message. While Telegram is unavailable, remember the latest
@@ -68,7 +68,7 @@ class Worker:
         """Send one clip for review. False = Telegram is unavailable, stop delivering for now."""
         caption = messages.clip_caption(clip)
         keyboard = messages.buttons_as_json(messages.clip_buttons(clip))
-        chat = int(clip["chat_id"] or self.cfg.telegram_owner_id)
+        chat = int(clip["chat_id"] or self.cfg.telegram_chat_id or self.cfg.telegram_owner_id)
         final = Path(clip["local_path"] or "")
         preview = final.with_name(final.stem + ".preview.mp4")
         try:

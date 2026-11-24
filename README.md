@@ -115,6 +115,19 @@ a Meta app with "API setup with Instagram login", your account added and a token
 video from a URL. The token is refreshed automatically before it expires. `clipfarm.check` shows the
 account and today's quota.
 
+## Friends and a group chat
+
+- `TELEGRAM_ALLOWED_USERS=222,333`: friends' numeric ids (from @userinfobot) who may send links and
+  use the buttons. Everyone else is ignored. The owner (`TELEGRAM_OWNER_ID`) always has access and
+  no queue limit; others may have `MAX_QUEUED_PER_USER` links waiting at once.
+- `TELEGRAM_CHAT_ID=-100…`: a group where all status messages, clips and posting reports go, even for
+  links sent privately to the bot. Add the bot to the group, **make it an admin** (no rights needed;
+  admins see all messages, so pasted links work), send `/chatid` there, put the id in `.env` and
+  restart the bot and worker.
+- In the group, just paste a link. Clips show who approved or skipped them. To rename, tap ✏️ and
+  *reply* to the bot's question; normal chat never renames anything.
+- Approved clips post to the **owner's** connected accounts.
+
 ## Telegram troubleshooting
 
 `python -m clipfarm.check` prints the bot id it used and what Telegram answered.
