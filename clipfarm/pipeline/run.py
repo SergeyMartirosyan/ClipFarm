@@ -251,6 +251,10 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
         on_status("analyzing", f"AI is watching the top {len(shortlist)} candidates")
         note = vision.VisionReviewer(cfg, judge).review(source.video_path, shortlist, segments)
         log.info("Vision review: %s", note)
+    dropped = [c for c in shortlist if c.extra.get("exclude")]
+    if dropped:
+        log.info("Dropped %d candidates: %s", len(dropped), "; ".join(sorted({c.extra["exclude"] for c in dropped})))
+        shortlist = [c for c in shortlist if not c.extra.get("exclude")]
     chosen = select.choose(shortlist, cfg.clips_per_video)
     # Present in story order; scores are shown on each clip.
     chosen.sort(key=lambda c: c.start)

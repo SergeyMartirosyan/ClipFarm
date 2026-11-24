@@ -70,6 +70,19 @@ often visual (a clutch play, a fail, a jump scare, a glitch). Viewer clip titles
 Moments real viewers clipped, especially popular ones, are proven; strongly prefer them, and borrow \
 the wording of a good viewer clip title when it fits.
 
+The streamer is the show. The transcript also contains lines spoken by the GAME (cutscene dialogue, \
+characters, narration, scripted story); those are not the streamer. Scripted cutscene dialogue reads \
+well on paper but makes a poor clip on its own: it is just the game's footage. Prefer moments where \
+the streamer is the focus: their play, their fails and wins, their reactions, their jokes and \
+opinions. Use a cutscene only when the streamer's reaction to it is the point (talking over it, \
+shocked, laughing, arguing with it), and then keep the clip centred on that reaction. Across your \
+list, mix in gameplay moments, not only story beats.
+
+Publishers (e.g. Rockstar) remove fan uploads that are standalone cutscenes, compilations of story \
+dialogue, the game's ending or major plot twists, and pre-release footage. Never pick a clip that is \
+mainly a cutscene or story dialogue, and avoid endings and big story reveals (spoilers) entirely, even \
+with a reaction. Gameplay with the streamer's commentary is the safe, and better, kind of clip.
+
 Reactions need their cause. When the streamer reacts ("what?!", "NO WAY", laughing, screaming, \
 swearing), the clip must START BEFORE whatever caused the reaction (the crash, the kill, the betrayal, \
 the jump scare), usually 5-15 seconds before the first reaction words, even if nothing is said in that \
@@ -98,6 +111,7 @@ class Candidate:
     menu_or_idle: bool = False      # menu, loading screen, AFK: a bad clip whatever was said
     rank_bonus: float = 0.0         # -1..+1 from ranking the finalists against each other
     vision_note: str = ""           # what the model saw
+    penalty: float = 0.0            # points off from the vision review (e.g. a cutscene nobody reacts to)
 
     @property
     def llm_score(self) -> float:
@@ -112,6 +126,7 @@ class Candidate:
         score = 0.5 * self.llm_score + 0.5 * (10.0 * self.signal_score) + self.rank_bonus
         if self.menu_or_idle:
             score -= 3.0
+        score -= self.penalty
         return max(0.0, min(10.0, score))
 
 
@@ -334,16 +349,29 @@ class Judge:
             raise JudgeError("Gemini returned an empty response")
         return resp.text
 
+    def claude_allowed(self) -> bool:
+        """A fallback key is set and this month's fallback spend is under the cap."""
+        if not self.cfg.anthropic_api_key:
+            return False
+        if self.db is not None and self.db.spend_this_month("anthropic") >= self.cfg.fallback_monthly_cap_usd:
+            return False
+        return True
+
     def _call_claude(self, prompt: str) -> str:
+        return self.claude_json(SYSTEM_PROMPT, prompt, CLIP_SCHEMA)
+
+    def claude_json(self, system: str, content, schema: dict) -> str:
+        """One Claude call with a JSON schema; logs the spend. `content` is a prompt string or a
+        list of content blocks (text + images)."""
         import anthropic
 
-        client = anthropic.Anthropic(api_key=self.cfg.anthropic_api_key)
+        client = anthropic.Anthropic(api_key=self.cfg.anthropic_api_key, timeout=300)
         resp = client.messages.create(
             model=self.cfg.fallback_model,
             max_tokens=16000,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-            output_config={"format": {"type": "json_schema", "schema": CLIP_SCHEMA}},
+            system=system,
+            messages=[{"role": "user", "content": content}],
+            output_config={"format": {"type": "json_schema", "schema": schema}},
         )
         cost = (resp.usage.input_tokens * HAIKU_PRICE_IN + resp.usage.output_tokens * HAIKU_PRICE_OUT) / 1e6
         if self.db is not None:

@@ -259,3 +259,98 @@ def test_starts_late_moves_start_back_within_max_length():
         "menu_or_idle": False, "starts_late": False, "start_earlier": 9}], "ranking": [0]}), 1)
     vision.apply_verdicts([c3], v3, max_len=60)
     assert c3.start == 100
+
+
+# --- cutscenes and the Claude fallback -------------------------------------------------------------
+
+def _verdict(cid, **kw):
+    base = {"id": cid, "what_happens": "x", "visual": 6, "hook": 6, "menu_or_idle": False,
+            "starts_late": False, "start_earlier": 0, "cutscene": False, "streamer_reaction": 5}
+    base.update(kw)
+    return base
+
+
+def test_cutscene_without_reaction_is_penalised():
+    quiet, reacted, gameplay = _cand(0, 30), _cand(40, 70), _cand(80, 110)
+    v = vision.parse_verdicts(json.dumps({"clips": [
+        _verdict(0, cutscene=True, streamer_reaction=2),
+        _verdict(1, cutscene=True, streamer_reaction=9),
+        _verdict(2, cutscene=False, streamer_reaction=6)], "ranking": []}), 3)
+    vision.apply_verdicts([quiet, reacted, gameplay], v)
+    assert quiet.penalty == 2.5 and reacted.penalty == 1.0 and gameplay.penalty == 0
+    assert quiet.extra["exclude"] and "exclude" not in reacted.extra and "exclude" not in gameplay.extra
+    assert quiet.final_score < reacted.final_score < gameplay.final_score
+    assert "cutscene, little reaction" in quiet.vision_note and "strong reaction" in reacted.vision_note
+
+
+def test_judge_prompt_puts_the_streamer_first():
+    from clipfarm.pipeline.judge import SYSTEM_PROMPT
+
+    assert "The streamer is the show" in SYSTEM_PROMPT and "cutscene" in SYSTEM_PROMPT
+    assert "endings" in SYSTEM_PROMPT and "spoilers" in SYSTEM_PROMPT
+    assert "streamer_reaction" in vision.SYSTEM_PROMPT
+
+
+def test_claude_blocks_and_strict_schema():
+    blocks = vision.claude_blocks([_cand(10, 40)], [[b"\xff\xd8a", b"\xff\xd8b"]], [], before=[[b"\xff\xd8p"]])
+    kinds = [b["type"] for b in blocks]
+    assert kinds.count("image") == 3 and kinds[0] == "text"
+    assert blocks[[i for i, k in enumerate(kinds) if k == "image"][0]]["source"]["media_type"] == "image/jpeg"
+    s = vision.strict_schema(vision.VISION_SCHEMA)
+    assert s["additionalProperties"] is False and s["properties"]["clips"]["items"]["additionalProperties"] is False
+    assert "additionalProperties" not in vision.VISION_SCHEMA  # original untouched (Gemini gets it as is)
+
+
+def test_claude_takes_over_when_every_gemini_model_fails(monkeypatch):
+    calls = {}
+
+    class Judge:
+        def __init__(self):
+            def gen(model, contents, config):
+                raise RuntimeError("503 UNAVAILABLE")
+            self.client = SimpleNamespace(models=SimpleNamespace(generate_content=gen))
+
+        def _gemini_client(self):
+            return self.client
+
+        def _gemini_chain(self):
+            return ["m1", "m2"]
+
+        def claude_allowed(self):
+            return True
+
+        def claude_json(self, system, content, schema):
+            calls["images"] = sum(1 for b in content if b["type"] == "image")
+            calls["closed"] = schema["additionalProperties"] is False
+            return json.dumps({"clips": [_verdict(0, visual=9), _verdict(1, cutscene=True, streamer_reaction=1)],
+                               "ranking": [0, 1]})
+
+    monkeypatch.setattr(vision, "sample_frames", lambda video, s, e, n=4: [b"\xff\xd8"] * n)
+    cands = _cands(2)
+    note = vision.VisionReviewer(SimpleNamespace(gemini_api_key="k", clip_max_seconds=60), Judge()).review("v", cands, [])
+    assert note == "AI watched 2 of 2 candidates (Claude fallback)"
+    assert calls["closed"] and calls["images"] == 2 * 4 + 2  # second clip starts at 100 s: has 2 "before" frames
+    assert cands[0].visual == 9 and cands[1].penalty == 2.5
+
+
+def test_no_claude_when_cap_reached(monkeypatch):
+    class Judge:
+        def __init__(self):
+            def gen(model, contents, config):
+                raise RuntimeError("503 UNAVAILABLE")
+            self.client = SimpleNamespace(models=SimpleNamespace(generate_content=gen))
+
+        def _gemini_client(self):
+            return self.client
+
+        def _gemini_chain(self):
+            return ["m1"]
+
+        def claude_allowed(self):
+            return False
+
+        def claude_json(self, *a):
+            raise AssertionError("must not be called")
+
+    monkeypatch.setattr(vision, "sample_frames", lambda video, s, e, n=4: [b"\xff\xd8"] * n)
+    assert "failed" in vision.VisionReviewer(SimpleNamespace(gemini_api_key="k"), Judge()).review("v", _cands(2), [])

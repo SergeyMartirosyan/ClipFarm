@@ -47,8 +47,11 @@ VISION_SCHEMA: dict = {
                     "menu_or_idle": {"type": "boolean"},
                     "starts_late": {"type": "boolean"},
                     "start_earlier": {"type": "integer"},
+                    "cutscene": {"type": "boolean"},
+                    "streamer_reaction": {"type": "integer"},
                 },
-                "required": ["id", "what_happens", "visual", "hook", "menu_or_idle", "starts_late", "start_earlier"],
+                "required": ["id", "what_happens", "visual", "hook", "menu_or_idle", "starts_late", "start_earlier",
+                             "cutscene", "streamer_reaction"],
             },
         },
         "ranking": {"type": "array", "items": {"type": "integer"}},
@@ -74,8 +77,13 @@ thing it is about already happened (e.g. the car has already crashed, the betray
 the streamer is already reacting), so a viewer would miss the cause.
 - start_earlier: if starts_late, how many seconds earlier it should start (1-15), else 0.
 
+- cutscene: true if most of the clip is a scripted game cutscene / cinematic (no player control).
+- streamer_reaction (0-10): how visible and strong the streamer's own reaction is (face cam, voice: \
+shock, laughing, shouting, commentary). A cutscene nobody reacts to is just the game's footage.
+
 Then ranking: every clip id, best first, judged as a viewer scrolling TikTok who has never seen \
-this streamer. Prefer clips with a clear moment, a reaction, and a payoff."""
+this streamer. Prefer clips with a clear moment, a reaction, and a payoff. The streamer is the show: \
+rank gameplay moments and big reactions above cutscenes the streamer barely reacts to."""
 
 
 @dataclass
@@ -87,6 +95,8 @@ class Verdict:
     rank: int | None  # 0 = best; None when the model didn't rank this clip
     starts_late: bool = False
     start_earlier: int = 0
+    cutscene: bool = False
+    streamer_reaction: int = 5
 
 
 def sample_frames(video: Path, start: float, end: float, n: int = FRAMES_PER_CLIP) -> list[bytes]:
@@ -133,6 +143,43 @@ def build_parts(candidates: list[Candidate], frames: list[list[bytes]], segments
     return parts
 
 
+def claude_blocks(candidates: list[Candidate], frames: list[list[bytes]], segments: list[Segment],
+                  before: list[list[bytes]] | None = None) -> list[dict]:
+    """The same review request as build_parts, as Anthropic content blocks."""
+    import base64
+
+    from google.genai import types as _types  # reuse build_parts' text by building parts first
+
+    blocks: list[dict] = []
+    for part in build_parts(candidates, frames, segments, _types, before):
+        if part.text:
+            blocks.append({"type": "text", "text": part.text})
+        elif part.inline_data:
+            blocks.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                                       "data": base64.b64encode(part.inline_data.data).decode()}})
+    return blocks
+
+
+def strict_schema(schema: dict) -> dict:
+    """Claude's structured outputs want every object closed (additionalProperties: false)."""
+    import copy
+
+    s = copy.deepcopy(schema)
+
+    def close(node):
+        if isinstance(node, dict):
+            if node.get("type") == "object":
+                node["additionalProperties"] = False
+            for v in node.values():
+                close(v)
+        elif isinstance(node, list):
+            for v in node:
+                close(v)
+
+    close(s)
+    return s
+
+
 def parse_verdicts(raw: str | dict, count: int) -> dict[int, Verdict]:
     data = json.loads(raw) if isinstance(raw, str) else raw
     ranking = [r for r in data.get("ranking", []) if isinstance(r, int) and 0 <= r < count]
@@ -156,6 +203,8 @@ def parse_verdicts(raw: str | dict, count: int) -> dict[int, Verdict]:
             menu_or_idle=bool(item.get("menu_or_idle", False)),
             rank=rank_of.get(cid),
             starts_late=bool(item.get("starts_late", False)),
+            cutscene=bool(item.get("cutscene", False)),
+            streamer_reaction=_clamp(item.get("streamer_reaction")) if item.get("streamer_reaction") is not None else 5,
             start_earlier=max(0, min(15, _clamp(item.get("start_earlier")) if item.get("start_earlier") is not None else 0)),
         )
     return out
@@ -179,6 +228,16 @@ def apply_verdicts(candidates: list[Candidate], verdicts: dict[int, Verdict], ma
         c.hook = round((c.hook + v.hook) / 2)
         c.menu_or_idle = v.menu_or_idle
         c.vision_note = v.what_happens
+        # A cutscene is only worth clipping for the streamer's reaction to it, and publishers remove
+        # standalone cutscenes: without a strong reaction the clip is dropped, with one it loses a point.
+        c.penalty = 0.0
+        c.extra.pop("exclude", None)
+        if v.cutscene:
+            c.penalty = 1.0 if v.streamer_reaction >= 6 else 2.5
+            if v.streamer_reaction < 6:
+                c.extra["exclude"] = "cutscene with little streamer reaction"
+        if v.cutscene:
+            c.vision_note += " (cutscene" + (", strong reaction)" if v.streamer_reaction >= 6 else ", little reaction)")
         if v.starts_late and v.start_earlier > 0:
             new_start = max(0.0, c.start - v.start_earlier)
             if max_len:
@@ -264,5 +323,17 @@ class VisionReviewer:
                             + (f", {late} started earlier to show the cause" if late else ""))
                 errors.append(f"{model}: empty review")
                 break
+        # Every Gemini model failed: Claude (if a key is set and the monthly cap allows) as fallback.
+        if hasattr(self.judge, "claude_allowed") and self.judge.claude_allowed():
+            try:
+                text = self.judge.claude_json(SYSTEM_PROMPT, claude_blocks(candidates, frames, segments, before),
+                                              strict_schema(VISION_SCHEMA))
+                verdicts = parse_verdicts(text, len(candidates))
+                if verdicts:
+                    apply_verdicts(candidates, verdicts, max_len)
+                    return f"AI watched {len(verdicts)} of {len(candidates)} candidates (Claude fallback)"
+                errors.append("claude: empty review")
+            except Exception as exc:
+                errors.append(f"claude: {str(exc)[:120]}")
         log.warning("Vision review failed: %s", "; ".join(errors))
         return "vision review failed, kept transcript scores"
