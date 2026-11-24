@@ -27,8 +27,10 @@ from .transcribe import Segment
 
 log = logging.getLogger(__name__)
 
-FRAMES_PER_CLIP = 6
-FRAME_WIDTH = 512
+FRAMES_PER_CLIP = 4
+FRAME_WIDTH = 384          # ≤384 px images cost Gemini the minimum (~258 tokens each)
+REQUEST_TIMEOUT_S = 150    # sent to Google as the server deadline too
+TOTAL_BUDGET_S = 420       # give up on the review (keep transcript scores) after this
 
 VISION_SCHEMA: dict = {
     "type": "object",
@@ -170,8 +172,16 @@ class VisionReviewer:
         self.cfg = cfg
         self.judge = judge  # reuses its Gemini client and model chain
 
-    def review(self, video: Path, candidates: list[Candidate], segments: list[Segment]) -> str:
-        """Re-scores `candidates` in place. Returns a short status note."""
+    def review(self, video: Path, candidates: list[Candidate], segments: list[Segment], clock=None) -> str:
+        """Re-scores `candidates` in place. Returns a short status note.
+
+        Each attempt is cheaper than the last: a timeout or overload usually means the request
+        was too heavy for the model at that moment, so retries send fewer candidates and frames.
+        Thinking is set low: the task is perception, and long thinking on dozens of images is
+        what made the first real run time out (504 after 300 s)."""
+        import time as _time
+
+        clock = clock or _time.monotonic
         if not self.cfg.gemini_api_key or not candidates:
             return "vision review skipped (no Gemini key)"
         from google.genai import types
@@ -179,30 +189,50 @@ class VisionReviewer:
         frames = [sample_frames(video, c.start, c.end) for c in candidates]
         if not any(frames):
             return "vision review skipped (could not read frames)"
-        parts = build_parts(candidates, frames, segments, types)
         client = self.judge._gemini_client()
-        errors = []
-        for model in self.judge._gemini_chain():
-            try:
-                resp = client.models.generate_content(
-                    model=model,
-                    contents=[types.Content(role="user", parts=parts)],
-                    config=types.GenerateContentConfig(
-                        system_instruction=SYSTEM_PROMPT,
-                        response_mime_type="application/json",
-                        response_json_schema=VISION_SCHEMA,
-                        temperature=0.3,
-                    ),
+        started = clock()
+        errors: list[str] = []
+        chain = self.judge._gemini_chain()
+        for attempt, model in enumerate(chain):
+            if clock() - started > TOTAL_BUDGET_S:
+                errors.append("time budget used up")
+                break
+            # Attempt 0: everything. Later: the best half (at least 4), 3 frames each.
+            n = len(candidates) if attempt == 0 else max(4, len(candidates) // (2 ** attempt))
+            keep = 4 if attempt == 0 else 3
+            subset = candidates[:n]
+            parts = build_parts(subset, [f[:keep] for f in frames[:n]], segments, types)
+            for thinking in (True, False):
+                cfg = dict(
+                    system_instruction=SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    response_json_schema=VISION_SCHEMA,
+                    temperature=0.3,
+                    http_options=types.HttpOptions(timeout=REQUEST_TIMEOUT_S * 1000),
                 )
-                verdicts = parse_verdicts(resp.text or "{}", len(candidates))
-            except Exception as exc:
-                errors.append(f"{model}: {str(exc)[:120]}")
-                log.warning("Vision review with %s failed: %s", model, exc)
-                continue
-            if verdicts:
-                apply_verdicts(candidates, verdicts)
-                idle = sum(1 for v in verdicts.values() if v.menu_or_idle)
-                return f"AI watched {len(verdicts)} candidates ({model})" + (f", {idle} menu/idle" if idle else "")
-            errors.append(f"{model}: empty review")
-        log.warning("Vision review failed on every model: %s", "; ".join(errors))
+                if thinking:
+                    cfg["thinking_config"] = types.ThinkingConfig(thinking_level="LOW")
+                try:
+                    resp = client.models.generate_content(
+                        model=model,
+                        contents=[types.Content(role="user", parts=parts)],
+                        config=types.GenerateContentConfig(**cfg),
+                    )
+                    verdicts = parse_verdicts(resp.text or "{}", len(subset))
+                except Exception as exc:
+                    msg = str(exc)
+                    if thinking and ("thinking" in msg.lower() or "INVALID_ARGUMENT" in msg):
+                        continue  # this model doesn't take the thinking setting: same request without it
+                    errors.append(f"{model}: {msg[:120]}")
+                    log.warning("Vision review with %s (%d clips) failed: %s", model, n, msg[:300])
+                    break
+                if verdicts:
+                    apply_verdicts(subset, verdicts)
+                    idle = sum(1 for v in verdicts.values() if v.menu_or_idle)
+                    took = clock() - started
+                    return (f"AI watched {len(verdicts)} of {len(candidates)} candidates ({model}, {took:.0f}s)"
+                            + (f", {idle} menu/idle" if idle else ""))
+                errors.append(f"{model}: empty review")
+                break
+        log.warning("Vision review failed: %s", "; ".join(errors))
         return "vision review failed, kept transcript scores"

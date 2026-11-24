@@ -115,7 +115,7 @@ def test_review_falls_through_to_next_model_and_applies(monkeypatch):
     cands = [_cand(0, 30), _cand(40, 70)]
     note = reviewer.review("v.mp4", cands, [])
     assert judge.calls == ["busy-model", "ok-model"]
-    assert "AI watched 2 candidates (ok-model), 1 menu/idle" == note
+    assert note.startswith("AI watched 2 of 2 candidates (ok-model,") and note.endswith("1 menu/idle")
     assert cands[1].final_score > cands[0].final_score
 
 
@@ -130,3 +130,88 @@ def test_review_failure_keeps_scores(monkeypatch):
 def test_review_skipped_without_key():
     r = vision.VisionReviewer(SimpleNamespace(gemini_api_key=""), None)
     assert "skipped" in r.review("v.mp4", [_cand(0, 30)], [])
+
+
+def _cands(n):
+    return [_cand(i * 100, i * 100 + 30, title=f"c{i}") for i in range(n)]
+
+
+def test_retries_send_smaller_requests_and_low_thinking(monkeypatch):
+    sizes, thinking = [], []
+
+    class Judge:
+        def __init__(self):
+            def gen(model, contents, config):
+                parts = contents[0].parts
+                sizes.append(sum(1 for p in parts if p.inline_data))
+                thinking.append(config.thinking_config is not None)
+                assert config.http_options.timeout == vision.REQUEST_TIMEOUT_S * 1000
+                if model != "m3":
+                    raise RuntimeError("504 DEADLINE_EXCEEDED")
+                return SimpleNamespace(text=json.dumps({"clips": [
+                    {"id": i, "what_happens": "x", "visual": 5, "hook": 5, "menu_or_idle": False} for i in range(4)],
+                    "ranking": [0, 1, 2, 3]}))
+            self.client = SimpleNamespace(models=SimpleNamespace(generate_content=gen))
+
+        def _gemini_client(self):
+            return self.client
+
+        def _gemini_chain(self):
+            return ["m1", "m2", "m3"]
+
+    monkeypatch.setattr(vision, "sample_frames", lambda video, s, e, n=4: [b"\xff\xd8"] * 4)
+    cands = _cands(16)
+    note = vision.VisionReviewer(SimpleNamespace(gemini_api_key="k"), Judge()).review("v", cands, [])
+    assert sizes == [16 * 4, 8 * 3, 4 * 3]  # all, then best half, then best quarter (min 4)
+    assert all(thinking)
+    assert "AI watched 4 of 16" in note
+    assert cands[0].visual == 5 and cands[10].visual is None
+
+
+def test_thinking_setting_dropped_for_models_that_reject_it(monkeypatch):
+    calls = []
+
+    class Judge:
+        def __init__(self):
+            def gen(model, contents, config):
+                calls.append(config.thinking_config is not None)
+                if config.thinking_config is not None:
+                    raise RuntimeError("400 INVALID_ARGUMENT: thinking_level is not supported")
+                return SimpleNamespace(text=json.dumps({"clips": [
+                    {"id": 0, "what_happens": "x", "visual": 7, "hook": 5, "menu_or_idle": False}], "ranking": [0]}))
+            self.client = SimpleNamespace(models=SimpleNamespace(generate_content=gen))
+
+        def _gemini_client(self):
+            return self.client
+
+        def _gemini_chain(self):
+            return ["m1"]
+
+    monkeypatch.setattr(vision, "sample_frames", lambda video, s, e, n=4: [b"\xff\xd8"])
+    cands = _cands(2)
+    assert "AI watched 1 of 2" in vision.VisionReviewer(SimpleNamespace(gemini_api_key="k"), Judge()).review("v", cands, [])
+    assert calls == [True, False]
+
+
+def test_review_stops_at_time_budget(monkeypatch):
+    t = {"now": 0.0}
+    calls = []
+
+    class Judge:
+        def __init__(self):
+            def gen(model, contents, config):
+                calls.append(model)
+                t["now"] += vision.TOTAL_BUDGET_S + 1  # one slow failure eats the whole budget
+                raise RuntimeError("504 DEADLINE_EXCEEDED")
+            self.client = SimpleNamespace(models=SimpleNamespace(generate_content=gen))
+
+        def _gemini_client(self):
+            return self.client
+
+        def _gemini_chain(self):
+            return ["m1", "m2", "m3"]
+
+    monkeypatch.setattr(vision, "sample_frames", lambda video, s, e, n=4: [b"\xff\xd8"])
+    note = vision.VisionReviewer(SimpleNamespace(gemini_api_key="k"), Judge()).review(
+        "v", _cands(6), [], clock=lambda: t["now"] + 1)
+    assert calls == ["m1"] and "failed" in note
