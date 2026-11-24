@@ -223,6 +223,17 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
 
     # 4. Render -------------------------------------------------------------------
     presets = layout_mod.load_presets(cfg.presets_path)
+    stream_cam = None
+    cam_searched = False
+    if vinfo.width > vinfo.height and (source.uploader or "").lower() not in presets and cfg.face_model_path.exists():
+        on_status("rendering", "finding the streamer's webcam")
+        stream_cam = layout_mod.find_stream_webcam(
+            source.video_path, duration, vinfo.width, vinfo.height, cfg.face_model_path)
+        cam_searched = True
+        if stream_cam:
+            log.info("Webcam found at x=%.0f y=%.0f (face %.0fx%.0f px)", *stream_cam)
+        else:
+            log.info("No fixed webcam in this stream: gameplay clips use the full picture")
     r2 = R2(cfg) if cfg.r2_enabled else None
     rendered: list[RenderedClip] = []
     for i, c in enumerate(chosen, start=1):
@@ -230,6 +241,7 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
         lay = layout_mod.choose_layout(
             source.video_path, c.start, c.end, vinfo.width, vinfo.height,
             cfg.face_model_path, source.uploader, presets,
+            stream_cam=stream_cam, cam_searched=cam_searched,
         )
         ass_path = None
         if audio is not None:

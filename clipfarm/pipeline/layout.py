@@ -95,8 +95,59 @@ def load_presets(path: Path) -> dict:
     return {k.lower(): v for k, v in data.items() if not k.startswith("_")}
 
 
-def decide(faces: list[list[tuple[float, float, float, float]]], fw: int, fh: int) -> Layout:
-    """faces: per sampled frame, the detected face boxes (pixels)."""
+FaceBox = tuple[float, float, float, float]  # x, y, w, h in pixels
+
+# A webcam is a face at the same spot in at least this share of frames sampled across the stream.
+CAM_MIN_SHARE = 0.25
+# In a clip, the webcam counts as visible if its face is found in this share of the clip's frames.
+CAM_PRESENT_SHARE = 0.25
+
+
+def _center(b: FaceBox) -> tuple[float, float]:
+    return b[0] + b[2] / 2, b[1] + b[3] / 2
+
+
+def webcam_from_faces(samples: list[list[FaceBox]], fw: int, fh: int) -> FaceBox | None:
+    """The streamer's webcam: a small face that sits at the same spot in a large share of frames
+    sampled across the whole stream. Faces inside the game (cutscenes, characters) move around and
+    come and go, so they don't qualify. Returns the median face box, or None."""
+    small = [(i, b) for i, faces in enumerate(samples) for b in faces if b[2] / fw < FACECAM_MAX_FACE_W]
+    if not small:
+        return None
+    tol_x, tol_y = 0.04 * fw, 0.06 * fh
+
+    def near(a: FaceBox, b: FaceBox) -> bool:
+        (ax, ay), (bx, by) = _center(a), _center(b)
+        return abs(ax - bx) <= tol_x and abs(ay - by) <= tol_y
+
+    best_frames: set[int] = set()
+    best_anchor: FaceBox | None = None
+    for _, anchor in small:
+        frames = {i for i, b in small if near(anchor, b)}
+        if len(frames) > len(best_frames):
+            best_frames, best_anchor = frames, anchor
+    if best_anchor is None or len(best_frames) < max(4, CAM_MIN_SHARE * len(samples)):
+        return None
+    members = [b for _, b in small if near(best_anchor, b)]
+    return tuple(float(np.median([b[k] for b in members])) for k in range(4))  # type: ignore[return-value]
+
+
+def webcam_visible(faces: list[list[FaceBox]], cam: FaceBox, fw: int, fh: int) -> bool:
+    """Is the stream's webcam showing in this clip? (Streamers often hide it during cutscenes.)"""
+    if not faces:
+        return False
+    cx, cy = _center(cam)
+    tol_x, tol_y = max(cam[2], 0.04 * fw), max(cam[3], 0.06 * fh)  # the head moves inside the cam
+    hits = sum(
+        1 for frame in faces
+        if any(abs(_center(b)[0] - cx) <= tol_x and abs(_center(b)[1] - cy) <= tol_y for b in frame)
+    )
+    return hits >= max(2, CAM_PRESENT_SHARE * len(faces))
+
+
+def decide(faces: list[list[FaceBox]], fw: int, fh: int, allow_facecam: bool = True) -> Layout:
+    """faces: per sampled frame, the detected face boxes (pixels). With allow_facecam=False (the
+    stream has no fixed webcam, or it isn't showing), small faces are game characters, not a cam."""
     if fh > fw:
         return Layout("vertical")
     frames_with_face = [f for f in faces if f]
@@ -108,7 +159,7 @@ def decide(faces: list[list[tuple[float, float, float, float]]], fw: int, fh: in
     # A face that jumps around isn't a fixed webcam; a single median crop would miss it.
     spread = float(np.median([abs((b[0] + b[2] / 2) - (med[0] + med[2] / 2)) for b in biggest]))
     if med[2] / fw < FACECAM_MAX_FACE_W:
-        if spread > fw * 0.1:
+        if spread > fw * 0.1 or not allow_facecam:
             return Layout("blur")
         return facecam_layout(med, fw, fh)
     return face_layout(med[0] + med[2] / 2, fw, fh)
@@ -150,10 +201,22 @@ def detect_faces(video: Path, start: float, end: float, model_path: Path, sample
     return results
 
 
+def find_stream_webcam(video: Path, duration: float, fw: int, fh: int, model_path: Path,
+                       samples: int = 80) -> FaceBox | None:
+    """Look for a fixed webcam across the whole stream (one pass, ~30-60 s on a long VOD)."""
+    if fh > fw or duration <= 0:
+        return None
+    faces = detect_faces(video, 0, duration, model_path, samples=samples)
+    return webcam_from_faces(faces, fw, fh) if faces else None
+
+
 def choose_layout(
     video: Path, start: float, end: float, fw: int, fh: int, model_path: Path,
     uploader: str = "", presets: dict | None = None,
+    stream_cam: FaceBox | None = None, cam_searched: bool = False,
 ) -> Layout:
+    """stream_cam/cam_searched come from find_stream_webcam. When the stream was searched, only
+    its fixed webcam can become the top panel, and only in clips where it is actually showing."""
     if fh > fw:
         return Layout("vertical")
     preset = (presets or {}).get((uploader or "").lower())
@@ -162,4 +225,8 @@ def choose_layout(
     faces = detect_faces(video, start, end, model_path)
     if faces is None:
         return Layout("blur")
-    return decide(faces, fw, fh)
+    if stream_cam is not None:
+        if webcam_visible(faces, stream_cam, fw, fh):
+            return facecam_layout(stream_cam, fw, fh)
+        return decide(faces, fw, fh, allow_facecam=False)  # cam hidden in this clip: show the game
+    return decide(faces, fw, fh, allow_facecam=not cam_searched)

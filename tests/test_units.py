@@ -325,3 +325,56 @@ def test_old_database_gets_new_columns(tmp_path):
     cid = d.add_clip(job_id=d.add_job("u"), idx=1, total=1, start=0, end=30, title="t", vision_note="saw a goal")
     assert d.get_clip(cid)["vision_note"] == "saw a goal"
     dbm.Database(path)  # second open must not try to add the column again
+
+
+# --- webcam: fixed across the stream vs. faces in the game -------------------------------------
+
+def _cam_samples():
+    """80 frames across a 1920x1080 stream: the streamer's cam face sits bottom-left in ~60% of
+    them (head moving a little); a cutscene character's face shows up mid-screen in a few."""
+    import random
+
+    rng = random.Random(1)
+    samples = []
+    for i in range(80):
+        faces = []
+        if i % 5 != 0 and i % 7 != 0:
+            faces.append((120 + rng.uniform(-15, 15), 820 + rng.uniform(-10, 10), 110, 130))
+        if 30 <= i < 36:
+            faces.append((900 + i * 20, 300, 140, 170))  # game character, moving
+        samples.append(faces)
+    return samples
+
+
+def test_webcam_found_from_fixed_face_not_game_faces():
+    cam = layout.webcam_from_faces(_cam_samples(), 1920, 1080)
+    assert cam is not None
+    assert 100 <= cam[0] <= 140 and 800 <= cam[1] <= 840
+
+
+def test_no_webcam_when_faces_only_come_from_the_game():
+    samples = [[(400 + 60 * (i % 9), 200 + 40 * (i % 5), 120, 140)] if i % 3 == 0 else [] for i in range(80)]
+    assert layout.webcam_from_faces(samples, 1920, 1080) is None
+
+
+def test_clip_where_cam_is_hidden_shows_the_game():
+    cam = (120.0, 820.0, 110.0, 130.0)
+    hidden = [[(1500, 300, 140, 170)] for _ in range(12)]          # only a cutscene face
+    assert not layout.webcam_visible(hidden, cam, 1920, 1080)
+    assert layout.decide(hidden, 1920, 1080, allow_facecam=False).kind == "blur"
+    visible = [[(125, 815, 112, 128)] if i % 2 else [] for i in range(12)]  # cam face in half the frames
+    assert layout.webcam_visible(visible, cam, 1920, 1080)
+
+
+def test_choose_layout_uses_stream_cam(monkeypatch, tmp_path):
+    model = tmp_path / "m.onnx"
+    model.write_bytes(b"x")
+    cam = (120.0, 820.0, 110.0, 130.0)
+    monkeypatch.setattr(layout, "detect_faces", lambda *a, **k: [[(1500, 300, 140, 170)] for _ in range(12)])
+    lay = layout.choose_layout("v", 0, 30, 1920, 1080, model, stream_cam=cam, cam_searched=True)
+    assert lay.kind == "blur"  # cam hidden: no zoom into a game face
+    lay = layout.choose_layout("v", 0, 30, 1920, 1080, model, stream_cam=None, cam_searched=True)
+    assert lay.kind == "blur"  # stream has no webcam at all
+    monkeypatch.setattr(layout, "detect_faces", lambda *a, **k: [[(125, 815, 112, 128)] for _ in range(12)])
+    lay = layout.choose_layout("v", 0, 30, 1920, 1080, model, stream_cam=cam, cam_searched=True)
+    assert lay.kind == "facecam" and lay.cam.x < 200
