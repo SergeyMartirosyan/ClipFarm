@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
+
+import numpy as np
 
 from .judge import Candidate
 from .transcribe import Segment
@@ -68,3 +71,28 @@ def choose(candidates: list[Candidate], limit: int) -> list[Candidate]:
 
 def with_bounds(c: Candidate, start: float, end: float) -> Candidate:
     return replace(c, start=start, end=end)
+
+
+LEAD_IN = 0.3  # seconds kept before the first word
+
+
+def dead_air_trim(lead: float, start: float, length: float, min_len: float,
+                  loud_db: np.ndarray | None = None, sound: np.ndarray | None = None) -> float:
+    """Seconds to cut from the start of a clip whose first word comes `lead` seconds in.
+
+    Short-form viewers decide in the first 2 seconds, so silence there costs views. But in gaming
+    the stretch before anyone talks can be the action itself, so only *dead* air is cut: the
+    lead-in must have no game sounds or reactions and be no louder than the stream's quiet
+    level. Keeps LEAD_IN seconds before the first word and never goes below `min_len`."""
+    if lead < 1.0:
+        return 0.0
+    cut = min(lead - LEAD_IN, max(0.0, length - min_len))
+    if cut < 0.7:
+        return 0.0
+    a, b = int(max(0, start)), int(math.ceil(start + lead))
+    if sound is not None and sound[a:b].size and float(sound[a:b].max()) >= 0.3:
+        return 0.0
+    if loud_db is not None and loud_db.size >= b > a:
+        if float(loud_db[a:b].mean()) > float(np.percentile(loud_db, 40)):
+            return 0.0  # loud lead-in: probably action, keep it
+    return round(cut, 2)

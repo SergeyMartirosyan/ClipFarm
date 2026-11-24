@@ -25,17 +25,20 @@ Telegram link ─► yt-dlp ─► transcript ─► signals + LLM judge ─► 
 | 7. VM setup script, systemd services, self-check | ✅ |
 | Twitch signals: viewer clips (Helix API) + chat replay bursts and emotes | ✅ |
 | Gemini watches frames of the top 20 candidates and ranks them against each other | ✅ |
-| Game-sound tagging (gunfire, explosions, screams), on-screen text | ⏳ |
+| Game-sound tagging (YAMNet: gunfire, explosions, crowd, laughing, screaming) | ✅ |
+| Viewer clips without a Twitch app (public route), chat replay retries + partial coverage | ✅ |
+| Dead air trimmed from clip openings (only when quiet and no game sounds) | ✅ |
+| On-screen text (ELIMINATED, VICTORY…) | ⏳ |
 
 ## How clips are picked
 
 | Job | Tool |
 |---|---|
 | Transcript | YouTube English subtitles (json3) when available, otherwise **faster-whisper** `small.en` |
-| Audience signals | **Twitch VODs:** clips viewers made (weighted by views, Helix API) and chat replay bursts with emote mood (KEKW = funny, Pog = hype, monkaS = shock), shifted 5 s earlier for chat delay. **YouTube:** "most replayed" heatmap. **All:** loudness spikes vs. the surrounding minute. Weights: viewer clips 2.0, chat 1.5, replay 1.5, loudness 1.0, or 0.5 when any audience signal exists. |
+| Audience signals | **Twitch VODs:** clips viewers made (weighted by views, Helix API) and chat replay bursts with emote mood (KEKW = funny, Pog = hype, monkaS = shock), shifted 5 s earlier for chat delay. **YouTube:** "most replayed" heatmap. **All:** game sounds and reactions from **YAMNet** (gunfire/explosions/crashes, crowd, laughing, screaming), each judged against its own level in the stream; loudness spikes vs. the surrounding minute. Viewer clips come from the Twitch API with app credentials, otherwise from Twitch's public web API (unofficial, fails soft). Weights: viewer clips 2.0, chat 1.5, replay 1.5, sounds 1.2, loudness 1.0, or 0.5 when any other signal exists. |
 | Judge | **Gemini** (free tier) reads the full timestamped transcript plus hot zones annotated with chat mood, and the list of viewer clip titles (which describe the on-screen action the transcript can't show), and returns scored clips as JSON. If a model is unavailable or overloaded it moves down a chain of Flash models picked from what your key can use, then falls back to **Claude Haiku 5.5** with the same prompt and schema. Fallback spend is logged and capped per month. |
 | Taste learning | Your 5 latest approved and 5 latest skipped clips are added to the prompt as examples |
-| Clean cuts | Start/end snap to sentence boundaries, then to shot cuts within 0.8 s (ffmpeg scene detection); length forced into 20–60 s |
+| Clean cuts | Start/end snap to sentence boundaries, then to shot cuts within 0.8 s (ffmpeg scene detection); length forced into 20–60 s. Silence before the first word is cut (keeping 0.3 s) only if that stretch is quiet and has no game sounds, since in gaming the silent part can be the action. |
 | Vision review | The 20 best non-overlapping candidates are shown to Gemini as 6 frames each, with what was said and how chat reacted. It scores how much happens on screen and the opening, flags menus/loading/idle screens, and ranks all candidates against each other (one request per video; fails soft). |
 | Ranking | `final = 0.5 × LLM score + 0.5 × signal strength + rank bonus (−1…+1) − 3 if menu/idle`, where the LLM score includes the visual score once reviewed; non-overlapping, top N |
 | Layout | OpenCV **YuNet** face detection on 12 frames: small steady webcam face → `facecam` (cam 40% top / game 60% bottom); big face → `face` (9:16 crop on the speaker); else → `blur` (full frame over a blurred copy). Per-channel overrides in `presets.json`. |
@@ -62,7 +65,7 @@ Requirements: Python 3.10+, `ffmpeg` (with libass), and a font such as DejaVu Sa
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-./scripts/fetch_models.sh          # YuNet face model (~230 KB); Whisper downloads itself on first use
+./scripts/fetch_models.sh          # face model + YAMNet sound model (~4.5 MB); Whisper downloads itself
 cp .env.example .env               # then fill it in
 cp presets.example.json presets.json   # optional
 ```
@@ -142,7 +145,8 @@ clipfarm/
     ├── run.py         orchestrates one link end to end
     ├── download.py    yt-dlp: video, heatmap, English subtitles
     ├── transcribe.py  json3 parser, faster-whisper
-    ├── signals.py     loudness, heatmap, Twitch signals → weighted hot zones
+    ├── signals.py     loudness, heatmap, Twitch, sound signals → weighted hot zones
+    ├── sounds.py      YAMNet game-sound / reaction tagging
     ├── twitch.py      viewer clips (Helix) + chat replay (GQL) → signals
     ├── judge.py       prompt, schema, Gemini → Haiku fallback
     ├── vision.py      Gemini watches frames of the shortlist, ranks it

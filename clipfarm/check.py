@@ -49,6 +49,12 @@ def check_tools() -> None:
 def check_models(cfg) -> None:
     ok = cfg.face_model_path.exists()
     report("OK" if ok else "WARN", "face model", str(cfg.face_model_path) if ok else "missing: run scripts/fetch_models.sh (blur layout only)")
+    from .pipeline.sounds import load_tagger
+
+    if load_tagger(cfg.sound_model_path, cfg.sound_labels_path) is not None:
+        report("OK", "sound model", "game sounds / laughing / screaming detection on")
+    else:
+        report("WARN", "sound model", "missing: run scripts/fetch_models.sh and pip install -r requirements.txt (one signal fewer)")
     try:
         from faster_whisper.utils import download_model
 

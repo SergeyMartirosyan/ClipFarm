@@ -21,10 +21,11 @@ LOUDNESS = "loudness spike"
 REPLAY = "replay peak"
 VIEWER_CLIPS = "viewer clips"
 CHAT = "chat burst"
+SOUND = "game/reaction sound"
 
 # How much each signal counts. Audience behaviour beats raw audio: loudness can't tell a
 # laugh from an explosion, so it's down-weighted whenever an audience signal exists.
-WEIGHTS = {VIEWER_CLIPS: 2.0, REPLAY: 1.5, CHAT: 1.5, LOUDNESS: 1.0}
+WEIGHTS = {VIEWER_CLIPS: 2.0, REPLAY: 1.5, CHAT: 1.5, SOUND: 1.2, LOUDNESS: 1.0}
 LOUDNESS_WEIGHT_WITH_AUDIENCE = 0.5
 
 

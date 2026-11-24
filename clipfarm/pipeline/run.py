@@ -13,7 +13,7 @@ from typing import Callable
 from ..db import Database
 from ..media import extract_audio, probe, scene_cuts
 from ..storage import R2, clip_key
-from . import captions, download, layout as layout_mod, render, select, signals, transcribe, twitch, vision
+from . import captions, download, layout as layout_mod, render, select, signals, sounds, transcribe, twitch, vision
 from .judge import Candidate, Judge
 
 log = logging.getLogger(__name__)
@@ -58,23 +58,35 @@ def fetch_twitch_signals(cfg, source: download.Source, duration: float) -> Twitc
         except Exception as exc:
             log.warning("Twitch viewer clips unavailable: %s", exc)
             out.notes.append("viewer clips failed")
+    elif source.uploader_id:
+        try:
+            out.clips = twitch.public_vod_clips(source.uploader_id, vid, source.timestamp)
+            out.notes.append(f"{len(out.clips)} viewer clips (public route)")
+        except Exception as exc:
+            log.warning("Twitch viewer clips (public route) unavailable: %s", exc)
+            out.notes.append("viewer clips failed (public route)")
     else:
-        out.notes.append("viewer clips off (no TWITCH_CLIENT_ID)")
+        out.notes.append("viewer clips off (channel unknown)")
     if cfg.twitch_chat:
         try:
             out.chat = twitch.ChatReplay().fetch(vid, duration)
-            out.notes.append(f"{out.chat.total} chat messages")
+            cov = "" if out.chat.coverage >= 0.995 else f" ({100 * out.chat.coverage:.0f}% of the VOD)"
+            out.notes.append(f"{out.chat.total} chat messages{cov}")
         except Exception as exc:
             log.warning("Twitch chat replay unavailable: %s", exc)
             out.notes.append("chat replay failed")
     return out
 
 
-def audience_note(tw: TwitchSignals | None, start: float, end: float) -> str:
-    """How the audience reacted inside a clip, in words, for the vision review."""
-    if tw is None:
-        return ""
+def audience_note(tw: TwitchSignals | None, start: float, end: float, snd: sounds.SoundData | None = None) -> str:
+    """How the audience (and the stream's audio) reacted inside a clip, in words, for the vision review."""
     notes = []
+    if snd is not None:
+        s = snd.summary(start, end)
+        if s:
+            notes.append(s)
+    if tw is None:
+        return "; ".join(notes)
     if tw.chat is not None:
         # The busiest 12 s of chat within the clip (chat time = video time + delay).
         a, b = int(start) + twitch.CHAT_DELAY_SECONDS, int(end) + twitch.CHAT_DELAY_SECONDS
@@ -89,8 +101,13 @@ def audience_note(tw: TwitchSignals | None, start: float, end: float) -> str:
     return "; ".join(notes)
 
 
-def annotate_zones(zones: list[signals.HotZone], tw: TwitchSignals | None) -> None:
-    """Attach what chat said and which viewer clips cover each hot zone, for the judge."""
+def annotate_zones(zones: list[signals.HotZone], tw: TwitchSignals | None, snd: sounds.SoundData | None = None) -> None:
+    """Attach what was heard, what chat said and which viewer clips cover each hot zone, for the judge."""
+    if snd is not None:
+        for z in zones:
+            s = snd.summary(z.t - 3, z.t + 4)
+            if s:
+                z.notes.append(s)
     if tw is None:
         return
     for z in zones:
@@ -181,11 +198,21 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
             extra[signals.VIEWER_CLIPS] = twitch.viewer_clip_signal(tw.clips, int(duration) + 1)
         if tw.chat is not None and tw.chat.total > 0:
             extra[signals.CHAT] = twitch.chat_signal(tw.chat)
+    snd = None
+    if audio is not None:
+        tagger = sounds.load_tagger(cfg.sound_model_path, cfg.sound_labels_path)
+        if tagger is not None:
+            on_status("analyzing", "listening for game sounds and reactions")
+            try:
+                snd = tagger.tag(audio)
+                extra[signals.SOUND] = sounds.sound_signal(snd)
+            except Exception as exc:  # an optional signal must never fail the job
+                log.warning("Sound tagging failed: %s", exc)
     loud = signals.loudness_per_second(audio) if audio is not None else None
     sig = signals.build_signals(duration, loud, source.heatmap, extra)
     on_status("analyzing", "signals: " + sig.describe() + (f"; {', '.join(tw.notes)}" if tw else ""))
     zones = signals.hot_zones(sig)
-    annotate_zones(zones, tw)
+    annotate_zones(zones, tw, snd)
     judge = Judge(cfg, db)
     candidates = judge.pick(
         title=source.title,
@@ -206,7 +233,7 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
         )
         c = select.with_bounds(c, start, end)
         c.signal_score = sig.strength(start, end)
-        c.extra["audience"] = audience_note(tw, start, end)
+        c.extra["audience"] = audience_note(tw, start, end, snd)
         snapped.append(c)
 
     # Second look: Gemini watches frames of the best non-overlapping candidates and ranks them.
@@ -247,6 +274,14 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
         if audio is not None:
             clip_audio = extract_audio(source.video_path, workdir / f"clip-{i:02d}.wav", c.start, c.end)
             words = [w for s in transcriber.transcribe(clip_audio, words=True) for w in s.words]
+            cut = select.dead_air_trim(
+                words[0].start if words else 0.0, c.start, c.end - c.start, cfg.clip_min_seconds - 5,
+                loud_db=loud, sound=extra.get(signals.SOUND),
+            ) if words else 0.0
+            if cut:
+                log.info("Clip %d: trimming %.1fs of dead air before the first word", i, cut)
+                c.start = round(c.start + cut, 2)
+                words = [transcribe.Word(w.start - cut, w.end - cut, w.text) for w in words if w.end > cut]
             if words:
                 ass_path = captions.write_ass(
                     words, workdir / f"clip-{i:02d}.ass", margin_v=render.caption_margin(lay)

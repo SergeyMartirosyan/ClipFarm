@@ -9,6 +9,7 @@ and carry on without chat.
 from __future__ import annotations
 
 import bisect
+import json
 import logging
 import math
 import re
@@ -152,6 +153,81 @@ def parse_helix_clips(page: dict, vid: str) -> list[ViewerClip]:
     return out
 
 
+# ---- viewer clips without a Twitch app (public web GQL) ----------------------------------------
+
+
+def clips_period(vod_timestamp: float, now: float | None = None) -> str:
+    """Smallest clip period that covers the VOD: fewer pages to scan for big channels."""
+    import time as _time
+
+    if not vod_timestamp:
+        return "LAST_MONTH"
+    age_days = ((now or _time.time()) - vod_timestamp) / 86400
+    if age_days <= 1:
+        return "LAST_DAY"
+    if age_days <= 7:
+        return "LAST_WEEK"
+    if age_days <= 30:
+        return "LAST_MONTH"
+    return "ALL_TIME"
+
+
+def clips_query(login: str, period: str, cursor: str | None) -> str:
+    after = f", after: {json.dumps(cursor)}" if cursor else ""
+    return (
+        "query { user(login: %s) { clips(first: 100%s, criteria: {period: %s, sort: VIEWS_DESC}) {"
+        " pageInfo { hasNextPage }"
+        " edges { cursor node { id title viewCount durationSeconds videoOffsetSeconds video { id } } } } } }"
+    ) % (json.dumps(login), after, period)
+
+
+def parse_public_clips(payload, vid: str) -> tuple[list[ViewerClip], str | None, bool]:
+    """GQL clips page -> (clips of this VOD, last cursor, has next page)."""
+    item = payload[0] if isinstance(payload, list) else payload
+    if item.get("errors"):
+        raise TwitchError(f"Twitch clips API error: {item['errors'][0].get('message')}")
+    user = (item.get("data") or {}).get("user")
+    if user is None:
+        raise TwitchError("Twitch clips API: channel not found")
+    clips = user.get("clips") or {}
+    edges = clips.get("edges") or []
+    out = []
+    for e in edges:
+        n = e.get("node") or {}
+        if str((n.get("video") or {}).get("id")) != str(vid) or n.get("videoOffsetSeconds") is None:
+            continue
+        out.append(ViewerClip(
+            offset=float(n["videoOffsetSeconds"]),
+            duration=float(n.get("durationSeconds") or 30),
+            views=int(n.get("viewCount") or 0),
+            title=(n.get("title") or "").strip(),
+            url=f"https://clips.twitch.tv/{n.get('id')}" if n.get("id") else "",
+        ))
+    cursor = edges[-1].get("cursor") if edges else None
+    return out, cursor, bool((clips.get("pageInfo") or {}).get("hasNextPage"))
+
+
+def public_vod_clips(login: str, vid: str, vod_timestamp: float = 0.0, http: httpx.Client | None = None,
+                     max_pages: int = 10) -> list[ViewerClip]:
+    """Clips viewers made from this VOD, through Twitch's public web API (no app or 2FA needed).
+    Unofficial like chat replay: if Twitch changes it, this raises and the job continues without."""
+    http = http or httpx.Client(timeout=20)
+    period = clips_period(vod_timestamp)
+    found: list[ViewerClip] = []
+    cursor = None
+    for _ in range(max_pages):
+        r = http.post(GQL_URL, json={"query": clips_query(login, period, cursor)},
+                      headers={"Client-Id": GQL_CLIENT_ID})
+        if r.status_code != 200:
+            raise TwitchError(f"Twitch clips API HTTP {r.status_code}")
+        page, cursor, more = parse_public_clips(r.json(), vid)
+        found += page
+        if not more or not cursor:
+            break
+    found.sort(key=lambda c: c.views, reverse=True)
+    return found
+
+
 def viewer_clip_signal(clips: list[ViewerClip], seconds: int) -> np.ndarray:
     """0..1 per second. Popular clips weigh more; the last 40% of each clip (where the
     moment usually is: people press 'clip' right after it) weighs double."""
@@ -181,6 +257,8 @@ class ChatData:
     rate: np.ndarray                                   # messages per second
     categories: dict[str, np.ndarray]                  # category -> reaction tokens per second
     emote_events: list[tuple[int, str]] = field(default_factory=list)  # (second, token), sorted
+    coverage: float = 1.0                              # share of the VOD whose chat was read
+    problems: list[str] = field(default_factory=list)
 
     @property
     def total(self) -> int:
@@ -235,10 +313,31 @@ def parse_comments(payload) -> tuple[list[tuple[int, str]], bool]:
 
 
 class ChatReplay:
-    def __init__(self, http: httpx.Client | None = None, workers: int = 4, max_requests: int = 8000):
+    """Reads a VOD's chat replay in parallel ranges. Robust by design: each page is retried with
+    backoff, the request budget is shared (busy stretches get more of it), and a range that keeps
+    failing stops on its own; the rest of the chat is still used. `coverage` reports how much of
+    the VOD was actually read."""
+
+    def __init__(self, http: httpx.Client | None = None, workers: int = 4, max_requests: int = 12000,
+                 retries: int = 3, backoff: float = 1.0, sleep=None):
+        import threading
+        import time as _time
+
         self.http = http or httpx.Client(timeout=20, headers={"Client-Id": GQL_CLIENT_ID})
         self.workers = workers
         self.max_requests = max_requests
+        self.retries = retries
+        self.backoff = backoff
+        self._sleep = sleep or _time.sleep
+        self._lock = threading.Lock()
+        self._used = 0
+
+    def _take_budget(self) -> bool:
+        with self._lock:
+            if self._used >= self.max_requests:
+                return False
+            self._used += 1
+            return True
 
     def _page(self, vid: str, offset: int):
         body = [{
@@ -246,23 +345,41 @@ class ChatReplay:
             "variables": {"videoID": vid, "contentOffsetSeconds": offset},
             "extensions": {"persistedQuery": {"version": 1, "sha256Hash": COMMENTS_QUERY_HASH}},
         }]
-        r = self.http.post(GQL_URL, json=body, headers={"Client-Id": GQL_CLIENT_ID})
-        if r.status_code != 200:
-            raise TwitchError(f"Twitch chat API HTTP {r.status_code}")
-        return parse_comments(r.json())
+        last_error = "?"
+        for attempt in range(self.retries + 1):
+            try:
+                r = self.http.post(GQL_URL, json=body, headers={"Client-Id": GQL_CLIENT_ID})
+                if r.status_code == 200:
+                    return parse_comments(r.json())
+                last_error = f"HTTP {r.status_code}"
+                if r.status_code < 500 and r.status_code != 429:
+                    break  # 4xx other than rate limiting won't fix itself
+            except httpx.HTTPError as exc:
+                last_error = exc.__class__.__name__
+            except ValueError:
+                last_error = "not JSON"
+            if attempt < self.retries:
+                self._sleep(self.backoff * (3 ** attempt))
+        raise TwitchError(f"Twitch chat API: {last_error} at {offset}s")
 
-    def _range(self, vid: str, start: int, end: int, budget: int) -> list[tuple[int, str]]:
-        """Walk the chat by offset (cursor paging needs an integrity token; offsets don't)."""
+    def _range(self, vid: str, start: int, end: int) -> tuple[list[tuple[int, str]], int, str]:
+        """Walk the chat by offset (cursor paging needs an integrity token; offsets don't).
+        Returns (messages, second reached, problem or "")."""
         msgs: list[tuple[int, str]] = []
         offset = start
-        for _ in range(budget):
-            if offset >= end:
-                break
-            page, has_next = self._page(vid, offset)
+        while offset < end:
+            if not self._take_budget():
+                return msgs, offset, "request budget used up"
+            try:
+                page, has_next = self._page(vid, offset)
+            except TwitchError as exc:
+                if offset == start:
+                    raise  # nothing read at all: let the caller decide
+                return msgs, offset, str(exc)
             page = [m for m in page if m[0] >= offset]
             if not page:
                 if not has_next:
-                    break
+                    return msgs, end, ""
                 offset += 10  # quiet stretch
                 continue
             last = max(t for t, _ in page)
@@ -275,16 +392,31 @@ class ChatReplay:
                 # A whole batch inside one second (a huge spam burst): take it and move on.
                 msgs += [m for m in page if m[0] < end]
                 offset += 1
-        return msgs
+        return msgs, end, ""
 
     def fetch(self, vid: str, duration: float) -> ChatData:
         seconds = int(math.ceil(duration))
         n = max(1, self.workers)
         bounds = [int(seconds * i / n) for i in range(n + 1)]
-        budget = self.max_requests // n
+
+        def run(i: int):
+            try:
+                return self._range(vid, bounds[i], bounds[i + 1])
+            except TwitchError as exc:
+                return [], bounds[i], str(exc)
+
         with ThreadPoolExecutor(n) as pool:
-            parts = list(pool.map(lambda i: self._range(vid, bounds[i], bounds[i + 1], budget), range(n)))
-        return build_chat_data([m for p in parts for m in p], seconds)
+            parts = list(pool.map(run, range(n)))
+        covered = sum(reached - bounds[i] for i, (_, reached, _) in enumerate(parts))
+        problems = sorted({p for _, _, p in parts if p})
+        if covered == 0 and problems:
+            raise TwitchError("; ".join(problems))
+        data = build_chat_data([m for msgs, _, _ in parts for m in msgs], seconds)
+        data.coverage = covered / max(1, seconds)
+        data.problems = problems
+        if problems:
+            log.warning("Chat replay incomplete (%.0f%% read): %s", 100 * data.coverage, "; ".join(problems))
+        return data
 
 
 def build_chat_data(messages: list[tuple[int, str]], seconds: int) -> ChatData:

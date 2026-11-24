@@ -10,6 +10,9 @@ python-telegram-bot>=21.0
 yt-dlp>=2025.1.1
 faster-whisper>=1.1
 
+# Game-sound tagging (YAMNet on TensorFlow Lite)
+ai-edge-litert>=2.0
+
 # Layout (face detection via OpenCV YuNet)
 opencv-python-headless>=4.9
 

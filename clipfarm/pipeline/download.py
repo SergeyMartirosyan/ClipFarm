@@ -25,6 +25,8 @@ class Source:
     duration: float
     extractor: str
     video_id: str = ""
+    uploader_id: str = ""      # channel login on Twitch
+    timestamp: float = 0.0     # when the video/stream was published (unix time), if known
     # YouTube "most replayed" graph: [{"start_time", "end_time", "value" 0..1}]
     heatmap: list[dict[str, float]] = field(default_factory=list)
     # json3 subtitle file, if the site had English subtitles
@@ -76,6 +78,8 @@ def download(url: str, workdir: Path, cookies: str = "") -> Source:
         duration=float(info.get("duration") or 0),
         extractor=(info.get("extractor_key") or info.get("extractor") or "").lower(),
         video_id=str(info.get("id") or ""),
+        uploader_id=str(info.get("uploader_id") or info.get("channel_id") or ""),
+        timestamp=float(info.get("timestamp") or info.get("release_timestamp") or 0),
         heatmap=list(info.get("heatmap") or []),
     )
     source.subtitles_path = _download_subtitles(url, workdir, cookies, info)

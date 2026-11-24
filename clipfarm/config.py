@@ -71,6 +71,8 @@ class Config:
 
     # Layout
     face_model_path: Path
+    sound_model_path: Path
+    sound_labels_path: Path
     presets_path: Path
 
     # R2
@@ -135,6 +137,8 @@ def load_config(env_file: str | None = None) -> Config:
         face_model_path=Path(
             _str("FACE_MODEL_PATH", str(data_dir / "models" / "face_detection_yunet_2023mar.onnx"))
         ).resolve(),
+        sound_model_path=Path(_str("SOUND_MODEL_PATH", str(data_dir / "models" / "yamnet.tflite"))).resolve(),
+        sound_labels_path=Path(_str("SOUND_LABELS_PATH", str(data_dir / "models" / "yamnet_class_map.csv"))).resolve(),
         presets_path=Path(_str("PRESETS_PATH", "./presets.json")).resolve(),
         r2_account_id=_str("R2_ACCOUNT_ID"),
         r2_access_key_id=_str("R2_ACCESS_KEY_ID"),
