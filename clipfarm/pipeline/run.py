@@ -136,6 +136,8 @@ def process(
     workdir = work_dir_for(cfg, url)
     # A re-run (after a worker restart) gets its own folder: earlier clips may already be approved.
     outdir = cfg.clips_dir / f"job-{job_id}" / f"try-{attempt}"
+    if cfg.keep_last_source:
+        drop_other_sources(cfg, keep=workdir)  # a big stream needs ~15 GB while downloading
     workdir.mkdir(parents=True, exist_ok=True)
     outdir.mkdir(parents=True, exist_ok=True)
     try:
@@ -145,9 +147,21 @@ def process(
         # Old leftovers are removed by the regular cleanup.
         log.info("Job failed; keeping %s so a retry of this link reuses the download", workdir)
         raise
-    if not keep_workdir:
+    if keep_workdir or cfg.keep_last_source:
+        # Kept for re-runs of this link (download + transcript reused); the next new link removes it.
+        for leftover in workdir.glob("clip-*"):
+            leftover.unlink(missing_ok=True)
+    else:
         shutil.rmtree(workdir, ignore_errors=True)
     return result
+
+
+def drop_other_sources(cfg, keep: Path) -> None:
+    """Delete downloads kept from other links, so only one stream is ever stored."""
+    for d in cfg.work_dir.glob("src-*"):
+        if d.is_dir() and d != keep:
+            shutil.rmtree(d, ignore_errors=True)
+            log.info("Removed the kept download of an earlier stream (%s)", d.name)
 
 
 def work_dir_for(cfg, url: str) -> Path:
@@ -171,19 +185,32 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
     source.duration = duration
     on_source(source)
 
-    audio = extract_audio(source.video_path, workdir / "audio.wav") if vinfo.has_audio else None
+    audio = None
+    if vinfo.has_audio:
+        audio = workdir / "audio.wav"
+        done = workdir / "audio.done"
+        if not (done.exists() and audio.exists()):
+            done.unlink(missing_ok=True)
+            extract_audio(source.video_path, audio)
+            done.touch()
 
     # Twitch chat/clips download over the network while Whisper uses the CPU.
     with ThreadPoolExecutor(1) as pool:
         tw_future = pool.submit(fetch_twitch_signals, cfg, source, duration)
 
         # 2. Transcript ---------------------------------------------------------
-        on_status("transcribing", "using site subtitles" if source.subtitles_path else "running Whisper")
-        segments: list[transcribe.Segment] = []
-        if source.subtitles_path:
-            segments = transcribe.parse_json3(source.subtitles_path)
-        if len(segments) < 10 and audio is not None:
-            segments = transcriber.transcribe(audio)
+        cached = workdir / "transcript.json"
+        segments: list[transcribe.Segment] = transcribe.load_segments(cached)
+        if segments:
+            on_status("transcribing", "reusing the transcript from the last run of this link")
+        else:
+            on_status("transcribing", "using site subtitles" if source.subtitles_path else "running Whisper")
+            if source.subtitles_path:
+                segments = transcribe.parse_json3(source.subtitles_path)
+            if len(segments) < 10 and audio is not None:
+                segments = transcriber.transcribe(audio)
+            if segments:
+                transcribe.save_segments(segments, cached)
         if not segments:
             raise PipelineError("No speech found; there's nothing for the judge to read.")
 

@@ -375,5 +375,41 @@ def test_failed_job_keeps_download_for_retry(tmp_path, monkeypatch):
     assert kept.exists()  # a retry of the same link (any job id) finds it
 
     monkeypatch.setattr(run, "_process", lambda *a: ["ok"])
-    assert run.process("https://twitch.tv/videos/1", 2, cfg, transcriber=None) == ["ok"]
-    assert not kept.parent.exists()  # cleaned after success
+    no_keep = dataclasses.replace(cfg, keep_last_source=False)
+    assert run.process("https://twitch.tv/videos/1", 2, no_keep, transcriber=None) == ["ok"]
+    assert not kept.parent.exists()  # cleaned after success when KEEP_LAST_SOURCE=0
+
+
+def test_last_source_is_kept_and_only_one(tmp_path, monkeypatch):
+    from clipfarm.config import load_config
+    from clipfarm.pipeline import run
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    cfg = load_config(env_file=str(tmp_path / "none.env"))
+    assert cfg.keep_last_source
+
+    def fake(url, job_id, cfg, workdir, *a):
+        (workdir / "source.mp4").write_bytes(b"stream")
+        (workdir / "clip-01.wav").write_bytes(b"tmp")
+        return ["ok"]
+
+    monkeypatch.setattr(run, "_process", fake)
+    run.process("https://twitch.tv/videos/1", 1, cfg, transcriber=None)
+    first = run.work_dir_for(cfg, "https://twitch.tv/videos/1")
+    assert (first / "source.mp4").exists() and not (first / "clip-01.wav").exists()
+    run.process("https://twitch.tv/videos/2", 2, cfg, transcriber=None)
+    assert not first.exists()  # a new link replaces the kept stream
+    assert (run.work_dir_for(cfg, "https://twitch.tv/videos/2") / "source.mp4").exists()
+
+
+def test_transcript_cache_roundtrip(tmp_path):
+    from clipfarm.pipeline import transcribe
+
+    segs = [transcribe.Segment(1.0, 2.5, "what? what?"), transcribe.Segment(3.0, 4.0, "no way")]
+    path = tmp_path / "transcript.json"
+    transcribe.save_segments(segs, path)
+    back = transcribe.load_segments(path)
+    assert [(s.start, s.end, s.text) for s in back] == [(1.0, 2.5, "what? what?"), (3.0, 4.0, "no way")]
+    assert transcribe.load_segments(tmp_path / "missing.json") == []
+    (tmp_path / "bad.json").write_text("{half")
+    assert transcribe.load_segments(tmp_path / "bad.json") == []

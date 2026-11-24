@@ -112,6 +112,21 @@ class Transcriber:
         return out
 
 
+def save_segments(segments: list[Segment], path: Path) -> None:
+    data = [{"start": s.start, "end": s.end, "text": s.text} for s in segments]
+    tmp = Path(path).with_suffix(".tmp")
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    tmp.replace(path)  # atomic: a crash never leaves a half-written transcript
+
+
+def load_segments(path: Path) -> list[Segment]:
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        return [Segment(float(d["start"]), float(d["end"]), str(d["text"])) for d in data]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
 def format_for_llm(segments: list[Segment]) -> str:
     """One line per segment: '[1234.5] text'. Compact, and timestamps are in seconds."""
     return "\n".join(f"[{s.start:.1f}] {s.text}" for s in segments if s.text)

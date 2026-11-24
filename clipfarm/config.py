@@ -63,6 +63,7 @@ class Config:
 
     # Download
     ytdlp_cookies: str
+    keep_last_source: bool
 
     # Twitch signals
     twitch_client_id: str
@@ -144,6 +145,7 @@ def load_config(env_file: str | None = None) -> Config:
         vision_review=_str("VISION_REVIEW", "1").lower() not in {"0", "false", "no", "off"},
         vision_candidates=_int("VISION_CANDIDATES", 20),
         ytdlp_cookies=_str("YTDLP_COOKIES"),
+        keep_last_source=_str("KEEP_LAST_SOURCE", "1").lower() not in {"0", "false", "no", "off"},
         twitch_client_id=_str("TWITCH_CLIENT_ID"),
         twitch_client_secret=_str("TWITCH_CLIENT_SECRET"),
         twitch_chat=_str("TWITCH_CHAT", "1").lower() not in {"0", "false", "no", "off"},
