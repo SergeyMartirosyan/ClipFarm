@@ -248,7 +248,10 @@ def main() -> None:
     if fails:
         print(f"{len(fails)} problem(s) to fix before starting the services.")
         sys.exit(1)
-    print("Ready. Start the services and send your bot a link.")
+    if args.no_telegram:
+        print("Everything checked is ready. Telegram was not checked (--no-telegram).")
+    else:
+        print("Ready. Start the services and send your bot a link.")
 
 
 if __name__ == "__main__":
