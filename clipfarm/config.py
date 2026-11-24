@@ -75,6 +75,14 @@ class Config:
     sound_labels_path: Path
     presets_path: Path
 
+    # Posting
+    instagram_access_token: str
+    instagram_api_base: str
+    posts_per_day: int
+    post_window: str
+    post_tz: str
+    caption_suffix: str
+
     # R2
     r2_account_id: str
     r2_access_key_id: str
@@ -100,6 +108,11 @@ class Config:
         return all(
             [self.r2_account_id, self.r2_access_key_id, self.r2_secret_access_key, self.r2_bucket]
         )
+
+    @property
+    def post_platforms(self) -> list[str]:
+        """Platforms ClipFarm can post to with the credentials in .env."""
+        return ["instagram"] if self.instagram_access_token else []
 
     @property
     def telegram_enabled(self) -> bool:
@@ -140,6 +153,12 @@ def load_config(env_file: str | None = None) -> Config:
         sound_model_path=Path(_str("SOUND_MODEL_PATH", str(data_dir / "models" / "yamnet.tflite"))).resolve(),
         sound_labels_path=Path(_str("SOUND_LABELS_PATH", str(data_dir / "models" / "yamnet_class_map.csv"))).resolve(),
         presets_path=Path(_str("PRESETS_PATH", "./presets.json")).resolve(),
+        instagram_access_token=_str("INSTAGRAM_ACCESS_TOKEN"),
+        instagram_api_base=_str("INSTAGRAM_API_BASE", "https://graph.instagram.com"),
+        posts_per_day=_int("POSTS_PER_DAY", 15),
+        post_window=_str("POST_WINDOW", "10:00-23:00"),
+        post_tz=_str("POST_TZ", "Asia/Yerevan"),
+        caption_suffix=_str("CAPTION_SUFFIX"),
         r2_account_id=_str("R2_ACCOUNT_ID"),
         r2_access_key_id=_str("R2_ACCESS_KEY_ID"),
         r2_secret_access_key=_str("R2_SECRET_ACCESS_KEY"),

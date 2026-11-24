@@ -200,6 +200,34 @@ def check_twitch(cfg) -> None:
     report("OK" if cfg.twitch_chat else "WARN", "Twitch chat replay", "on" if cfg.twitch_chat else "off (TWITCH_CHAT=0)")
 
 
+def check_instagram(cfg) -> None:
+    if not cfg.instagram_access_token:
+        report("WARN", "Instagram", "INSTAGRAM_ACCESS_TOKEN not set: approved clips won't be posted there")
+        return
+    try:
+        from . import db as dbm
+        from .publish.instagram import Instagram
+
+        ig = Instagram(cfg, dbm.Database(cfg.db_path))
+        me = ig.me()
+        detail = f"@{me.get('username')} (user id {me.get('user_id')})"
+        try:
+            lim = ig.publishing_limit()
+            used = lim.get("quota_usage")
+            total = (lim.get("config") or {}).get("quota_total")
+            if used is not None and total:
+                detail += f", posts used today: {used}/{total}"
+        except Exception:
+            pass
+        if not (cfg.r2_enabled and cfg.r2_public_base_url):
+            report("FAIL", "Instagram", detail + ": token works, but Instagram needs Cloudflare R2 with "
+                   "R2_PUBLIC_BASE_URL to fetch the videos")
+        else:
+            report("OK", "Instagram", detail)
+    except Exception as exc:
+        report("FAIL", "Instagram", str(exc)[:250])
+
+
 def check_r2(cfg) -> None:
     if not cfg.r2_enabled:
         report("WARN", "Cloudflare R2", "not configured: clips stay on this machine only")
@@ -248,6 +276,7 @@ def main() -> None:
     check_claude(cfg)
     check_twitch(cfg)
     check_r2(cfg)
+    check_instagram(cfg)
     check_youtube_cookies(cfg)
     fails = [r for r in results if r[0] == "FAIL"]
     print()

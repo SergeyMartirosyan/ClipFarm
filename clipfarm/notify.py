@@ -85,8 +85,10 @@ class Telegram:
             raise TelegramError(f"{method}: {body.get('description')}")
         raise self._trip(SHORT_WAIT, f"{method}: still rate-limited after a short wait")
 
-    def send_message(self, chat_id: int, text: str, keyboard: dict | None = None) -> int:
+    def send_message(self, chat_id: int, text: str, keyboard: dict | None = None, reply_to: int | None = None) -> int:
         data = {"chat_id": chat_id, "text": text, "disable_web_page_preview": "true"}
+        if reply_to:
+            data["reply_parameters"] = json.dumps({"message_id": reply_to, "allow_sending_without_reply": True})
         if keyboard:
             data["reply_markup"] = json.dumps(keyboard)
         return int(self._call("sendMessage", data)["message_id"])

@@ -29,12 +29,12 @@ if [ ! -f .env ]; then
 fi
 
 echo "==> systemd services"
-for svc in bot worker; do
+for svc in bot worker poster; do
   sed -e "s#__APP_DIR__#${APP_DIR}#g" -e "s#__USER__#${RUN_USER}#g" \
     "deploy/clipfarm-${svc}.service" | sudo tee "/etc/systemd/system/clipfarm-${svc}.service" >/dev/null
 done
 sudo systemctl daemon-reload
-sudo systemctl enable clipfarm-bot clipfarm-worker >/dev/null
+sudo systemctl enable clipfarm-bot clipfarm-worker clipfarm-poster >/dev/null
 
 cat <<MSG
 

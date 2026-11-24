@@ -54,6 +54,35 @@ async def cmd_queue(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text("\n".join(lines), disable_web_page_preview=True)
 
 
+def schedule_clip(db: dbm.Database, cfg, clip_id: int) -> str:
+    """Book the next free slot on every connected platform. Returns a short summary."""
+    from .publish.schedule import describe, next_slot
+
+    now = time.time()
+    booked = []
+    for platform in cfg.post_platforms:
+        at = next_slot(now, db.taken_slots(platform, now - 86400), cfg.posts_per_day, cfg.post_window, cfg.post_tz)
+        db.schedule_post(clip_id, platform, at)
+        booked.append(f"{messages.POST_LABEL.get(platform, platform)} {describe(at, cfg.post_tz)}")
+    return ("✅ Posting: " + ", ".join(booked)) if booked else ""
+
+
+async def cmd_schedule(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    from .publish.schedule import describe
+
+    cfg = ctx.bot_data["cfg"]
+    rows = _db(ctx).upcoming_posts(20)
+    if not cfg.post_platforms:
+        await update.effective_message.reply_text("No platform connected yet (set INSTAGRAM_ACCESS_TOKEN in .env).")
+        return
+    if not rows:
+        await update.effective_message.reply_text("Nothing scheduled. Approve clips with ✅ Post.")
+        return
+    lines = [f"{describe(r['scheduled_at'], cfg.post_tz)} · {messages.POST_LABEL.get(r['platform'], r['platform'])} · "
+             f"{r['title'][:60]}" for r in rows]
+    await update.effective_message.reply_text("Upcoming posts:\n" + "\n".join(lines))
+
+
 async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     db = _db(ctx)
     counts = db.clip_counts()
@@ -90,7 +119,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 await ctx.bot.edit_message_caption(
                     chat_id=msg.chat_id,
                     message_id=clip["telegram_message_id"],
-                    caption=messages.clip_caption(clip),
+                    caption=messages.clip_caption(clip, db.posts_for_clip(clip_id), ctx.bot_data["cfg"].post_tz),
                     reply_markup=_markup(messages.clip_buttons(clip)),
                 )
             except BadRequest as exc:  # e.g. the clip was sent as a text message
@@ -152,14 +181,19 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if new_status == dbm.PENDING_REVIEW:
         db.update_clip(clip["id"], status=new_status, decided_at=None)
+        db.cancel_posts(clip["id"])
     else:
         db.set_clip_decision(clip["id"], new_status)
+    answer = messages.DECISION_NOTE.get(new_status, "Back to review")
+    if new_status == dbm.APPROVED:
+        answer = schedule_clip(db, cfg, clip["id"]) or "✅ Approved (no platform connected yet)"
     clip = db.get_clip(clip["id"])
-    await q.answer(messages.DECISION_NOTE.get(new_status, "Back to review"))
+    await q.answer(answer)
     try:
         if q.message and q.message.video:
             await q.edit_message_caption(
-                caption=messages.clip_caption(clip), reply_markup=_markup(messages.clip_buttons(clip))
+                caption=messages.clip_caption(clip, db.posts_for_clip(clip["id"]), cfg.post_tz),
+                reply_markup=_markup(messages.clip_buttons(clip)),
             )
         else:
             await q.edit_message_reply_markup(reply_markup=_markup(messages.clip_buttons(clip)))
@@ -223,6 +257,7 @@ def main() -> None:
     app.add_handler(CommandHandler(["start", "help"], cmd_start, filters=owner))
     app.add_handler(CommandHandler("queue", cmd_queue, filters=owner))
     app.add_handler(CommandHandler("stats", cmd_stats, filters=owner))
+    app.add_handler(CommandHandler("schedule", cmd_schedule, filters=owner))
     app.add_handler(MessageHandler(owner & filters.TEXT & ~filters.COMMAND, on_text))
     app.add_handler(CallbackQueryHandler(on_button))
 

@@ -17,7 +17,7 @@ JOB_STATUS = {
 }
 
 DECISION_NOTE = {
-    dbm.APPROVED: "✅ Approved: queued for posting",
+    dbm.APPROVED: "✅ Approved",
     dbm.SKIPPED: "⏭ Skipped",
     dbm.POSTED: "📤 Posted",
     dbm.SUPERSEDED: "♻️ Replaced by a re-run",
@@ -47,7 +47,27 @@ def job_text(job: Mapping[str, Any], detail: str = "", extra: str = "") -> str:
     return "\n".join(lines)
 
 
-def clip_caption(clip: Mapping[str, Any]) -> str:
+POST_LABEL = {"instagram": "Instagram"}
+
+
+def posts_lines(posts, tz_name: str) -> list[str]:
+    """One line per platform: when it goes out, or what happened."""
+    from .publish.schedule import describe
+
+    lines = []
+    for p in posts:
+        name = POST_LABEL.get(p["platform"], p["platform"])
+        status = p["status"]
+        if status in (dbm.POST_SCHEDULED, dbm.POST_POSTING):
+            lines.append(f"📅 {name}: {describe(p['scheduled_at'], tz_name)}")
+        elif status == dbm.POST_POSTED:
+            lines.append(f"📤 {name}: posted")
+        elif status == dbm.POST_FAILED:
+            lines.append(f"⚠️ {name}: failed")
+    return lines
+
+
+def clip_caption(clip: Mapping[str, Any], posts=None, tz_name: str = "UTC") -> str:
     dur = clip["end"] - clip["start"]
     tags = " ".join(f"#{t}" for t in clip["hashtags"].split() if t)
     lines = [
@@ -68,6 +88,8 @@ def clip_caption(clip: Mapping[str, Any]) -> str:
     note = DECISION_NOTE.get(clip["status"])
     if note:
         lines += ["", note]
+    if posts:
+        lines += posts_lines(posts, tz_name)
     return "\n".join(lines)[:1024]  # Telegram caption limit
 
 
@@ -91,5 +113,6 @@ HELP = (
     "✅ Post · ✏️ Edit title · ⏭ Skip\n\n"
     "Commands:\n"
     "/queue: recent jobs and their status\n"
-    "/stats: clip counts and this month's fallback spend"
+    "/stats: clip counts and this month's fallback spend\n"
+    "/schedule: upcoming posts"
 )

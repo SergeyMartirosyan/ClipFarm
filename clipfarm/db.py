@@ -60,6 +60,22 @@ CREATE TABLE IF NOT EXISTS llm_usage (
     cost_usd      REAL NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS posts (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    clip_id      INTEGER NOT NULL REFERENCES clips(id),
+    platform     TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'scheduled',
+    scheduled_at REAL NOT NULL,
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    next_try_at  REAL,
+    external_id  TEXT,
+    url          TEXT,
+    error        TEXT,
+    created_at   REAL NOT NULL,
+    posted_at    REAL,
+    UNIQUE (clip_id, platform)
+);
+
 CREATE TABLE IF NOT EXISTS kv (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -67,6 +83,7 @@ CREATE TABLE IF NOT EXISTS kv (
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_clips_status ON clips(status);
+CREATE INDEX IF NOT EXISTS idx_posts_due ON posts(status, scheduled_at);
 """
 
 # Job statuses, in pipeline order. 'new' = being announced by the bot, not yet claimable.
@@ -83,6 +100,13 @@ APPROVED = "approved"
 SKIPPED = "skipped"
 POSTED = "posted"
 SUPERSEDED = "superseded"  # from an interrupted run of a job that was re-run
+
+# Post statuses (one row per clip per platform).
+POST_SCHEDULED = "scheduled"
+POST_POSTING = "posting"
+POST_POSTED = "posted"
+POST_FAILED = "failed"
+POST_CANCELLED = "cancelled"
 
 
 class Database:
@@ -241,6 +265,75 @@ class Database:
         with self.connect() as con:
             rows = con.execute("SELECT status, COUNT(*) FROM clips GROUP BY status").fetchall()
             return {r[0]: int(r[1]) for r in rows}
+
+    # ---- posts ---------------------------------------------------------------------
+
+    def schedule_post(self, clip_id: int, platform: str, at: float) -> None:
+        """(Re)schedule a clip for a platform. A post that already went out is left alone."""
+        now = time.time()
+        with self.connect() as con:
+            con.execute(
+                "INSERT INTO posts (clip_id, platform, scheduled_at, created_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(clip_id, platform) DO UPDATE SET status = 'scheduled', scheduled_at = excluded.scheduled_at, "
+                "attempts = 0, next_try_at = NULL, error = NULL WHERE posts.status IN ('cancelled', 'failed')",
+                (clip_id, platform, at, now),
+            )
+
+    def cancel_posts(self, clip_id: int) -> int:
+        with self.connect() as con:
+            return con.execute(
+                "UPDATE posts SET status = 'cancelled' WHERE clip_id = ? AND status = 'scheduled'", (clip_id,)
+            ).rowcount
+
+    def taken_slots(self, platform: str, since: float) -> list[float]:
+        with self.connect() as con:
+            rows = con.execute(
+                "SELECT scheduled_at FROM posts WHERE platform = ? AND scheduled_at >= ? "
+                "AND status IN ('scheduled', 'posting', 'posted')",
+                (platform, since),
+            ).fetchall()
+            return [float(r[0]) for r in rows]
+
+    def due_posts(self, now: float, limit: int = 5) -> list[sqlite3.Row]:
+        with self.connect() as con:
+            return con.execute(
+                "SELECT * FROM posts WHERE status = 'scheduled' AND scheduled_at <= ? "
+                "AND (next_try_at IS NULL OR next_try_at <= ?) ORDER BY scheduled_at LIMIT ?",
+                (now, now, limit),
+            ).fetchall()
+
+    def claim_post(self, post_id: int) -> bool:
+        with self.connect() as con:
+            return con.execute(
+                "UPDATE posts SET status = 'posting' WHERE id = ? AND status = 'scheduled'", (post_id,)
+            ).rowcount == 1
+
+    def update_post(self, post_id: int, **fields: Any) -> None:
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        with self.connect() as con:
+            con.execute(f"UPDATE posts SET {cols} WHERE id = ?", (*fields.values(), post_id))
+
+    def get_post(self, post_id: int) -> sqlite3.Row | None:
+        with self.connect() as con:
+            return con.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone()
+
+    def posts_for_clip(self, clip_id: int) -> list[sqlite3.Row]:
+        with self.connect() as con:
+            return con.execute("SELECT * FROM posts WHERE clip_id = ? ORDER BY platform", (clip_id,)).fetchall()
+
+    def upcoming_posts(self, limit: int = 20) -> list[sqlite3.Row]:
+        with self.connect() as con:
+            return con.execute(
+                "SELECT posts.*, clips.title AS title FROM posts JOIN clips ON clips.id = posts.clip_id "
+                "WHERE posts.status IN ('scheduled', 'posting') ORDER BY posts.scheduled_at LIMIT ?",
+                (limit,),
+            ).fetchall()
+
+    def requeue_stuck_posts(self) -> int:
+        """A post caught mid-upload by a restart goes back to the queue (Instagram publishes only
+        at the very last call, so a retry rarely duplicates)."""
+        with self.connect() as con:
+            return con.execute("UPDATE posts SET status = 'scheduled' WHERE status = 'posting'").rowcount
 
     # ---- llm usage ------------------------------------------------------------
 

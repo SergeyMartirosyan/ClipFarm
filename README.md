@@ -21,7 +21,9 @@ Telegram link ─► yt-dlp ─► transcript ─► signals + LLM judge ─► 
 | 3. Signals + Gemini judge with Claude Haiku fallback and a monthly cap | ✅ |
 | 4. Render: boundary snapping, layout detection, burned captions, preview, R2 | ✅ |
 | 5. Telegram approval (Post / Edit title / Skip / Undo) | ✅ |
-| 6. Posting scheduler + YouTube / TikTok / Instagram uploaders | ⏳ next |
+| 6a. Posting scheduler (slots per day, poster service, Telegram reports, /schedule) | ✅ |
+| 6b. Instagram Reels (Instagram Login, via public R2 URL, auto token refresh) | ✅ |
+| 6c. YouTube Shorts, TikTok | ⏳ |
 | 7. VM setup script, systemd services, self-check | ✅ |
 | Twitch signals: viewer clips (Helix API) + chat replay bursts and emotes | ✅ |
 | Gemini watches frames of the top 20 candidates and ranks them against each other | ✅ |
@@ -97,6 +99,21 @@ Without Telegram (for testing):
 .venv/bin/python -m clipfarm.cli process "https://www.youtube.com/watch?v=..." --clips 3
 .venv/bin/python -m clipfarm.cli cleanup
 ```
+
+## Posting
+
+Approving a clip (✅ Post) books the next free slot on every connected platform: `POSTS_PER_DAY`
+evenly spaced slots inside `POST_WINDOW` in `POST_TZ`, with a few minutes of jitter. The clip
+caption shows when it goes out; ↩️ Undo cancels it; `/schedule` lists what's coming. A separate
+service (`python -m clipfarm.poster`) publishes at the slot time, even while the worker is busy,
+and replies under the clip in Telegram with the link (or the error). Temporary failures are retried
+(5, 10, 20 min); permanent ones are reported once.
+
+**Instagram** (Instagram API with Instagram Login, no Facebook Page): needs a professional account,
+a Meta app with "API setup with Instagram login", your account added and a token generated there
+(`INSTAGRAM_ACCESS_TOKEN`), and Cloudflare R2 with a public bucket URL, because Instagram fetches the
+video from a URL. The token is refreshed automatically before it expires. `clipfarm.check` shows the
+account and today's quota.
 
 ## Telegram troubleshooting
 
