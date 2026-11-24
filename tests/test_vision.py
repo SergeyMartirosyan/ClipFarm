@@ -68,7 +68,11 @@ def test_build_parts_interleaves_text_and_images():
     images = [p for p in parts if p.inline_data]
     assert len(images) == 3
     assert "Clip id 0" in texts[1] and "no way he did that" in texts[1] and "KEKW" in texts[1]
-    assert "Clip id 1" in texts[2] and "Audience: no data" in texts[2]
+    assert texts[2].startswith("Clip frames (2")
+    assert "Clip id 1" in texts[3] and "Audience: no data" in texts[3]
+    with_before = vision.build_parts(cands, [[b"a"], [b"b"]], segs, types, before=[[b"p1", b"p2"], []])
+    t2 = [p.text for p in with_before if p.text]
+    assert any("BEFORE the clip" in t for t in t2) and sum(1 for p in with_before if p.inline_data) == 4
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
@@ -159,10 +163,11 @@ def test_retries_send_smaller_requests_and_low_thinking(monkeypatch):
         def _gemini_chain(self):
             return ["m1", "m2", "m3"]
 
-    monkeypatch.setattr(vision, "sample_frames", lambda video, s, e, n=4: [b"\xff\xd8"] * 4)
+    monkeypatch.setattr(vision, "sample_frames", lambda video, s, e, n=4: [b"\xff\xd8"] * n)
     cands = _cands(16)
     note = vision.VisionReviewer(SimpleNamespace(gemini_api_key="k"), Judge()).review("v", cands, [])
-    assert sizes == [16 * 4, 8 * 3, 4 * 3]  # all, then best half, then best quarter (min 4)
+    # all, then best half, then best quarter (min 4); +2 "before" frames per clip (not for the clip at 0 s)
+    assert sizes == [16 * 4 + 15 * 2, 8 * 3 + 7 * 2, 4 * 3 + 3 * 2]
     assert all(thinking)
     assert "AI watched 4 of 16" in note
     assert cands[0].visual == 5 and cands[10].visual is None
@@ -215,3 +220,42 @@ def test_review_stops_at_time_budget(monkeypatch):
     note = vision.VisionReviewer(SimpleNamespace(gemini_api_key="k"), Judge()).review(
         "v", _cands(6), [], clock=lambda: t["now"] + 1)
     assert calls == ["m1"] and "failed" in note
+
+
+def test_overload_does_not_shrink_the_request(monkeypatch):
+    sizes = []
+
+    class Judge:
+        def __init__(self):
+            def gen(model, contents, config):
+                sizes.append(sum(1 for p in contents[0].parts if p.inline_data))
+                if model == "m1":
+                    raise RuntimeError("503 UNAVAILABLE high demand")
+                return SimpleNamespace(text=json.dumps({"clips": [], "ranking": []}))
+            self.client = SimpleNamespace(models=SimpleNamespace(generate_content=gen))
+
+        def _gemini_client(self):
+            return self.client
+
+        def _gemini_chain(self):
+            return ["m1", "m2"]
+
+    monkeypatch.setattr(vision, "sample_frames", lambda video, s, e, n=4: [b"\xff\xd8"] * n)
+    vision.VisionReviewer(SimpleNamespace(gemini_api_key="k"), Judge()).review("v", _cands(10), [])
+    assert sizes[0] == sizes[1]  # 503 = busy, not too big: same full request to the next model
+
+
+def test_starts_late_moves_start_back_within_max_length():
+    c = _cand(100, 130)
+    v = vision.parse_verdicts(json.dumps({"clips": [{"id": 0, "what_happens": "car already crashed", "visual": 6,
+        "hook": 5, "menu_or_idle": False, "starts_late": True, "start_earlier": 8}], "ranking": [0]}), 1)
+    vision.apply_verdicts([c], v, max_len=60)
+    assert c.start == 92 and c.extra["started_earlier"] == 8
+    c2 = _cand(100, 155)
+    vision.apply_verdicts([c2], v, max_len=60)
+    assert c2.start == 95  # capped: 60 s max
+    c3 = _cand(100, 130)
+    v3 = vision.parse_verdicts(json.dumps({"clips": [{"id": 0, "what_happens": "x", "visual": 6, "hook": 5,
+        "menu_or_idle": False, "starts_late": False, "start_earlier": 9}], "ranking": [0]}), 1)
+    vision.apply_verdicts([c3], v3, max_len=60)
+    assert c3.start == 100

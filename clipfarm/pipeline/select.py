@@ -96,3 +96,41 @@ def dead_air_trim(lead: float, start: float, length: float, min_len: float,
         if float(loud_db[a:b].mean()) > float(np.percentile(loud_db, 40)):
             return 0.0  # loud lead-in: probably action, keep it
     return round(cut, 2)
+
+
+LOOK_BACK = 15.0      # seconds before a clip's start searched for the event the reaction is about
+CAUSE_LEAD = 2.0      # start this long before the event
+CAUSE_THRESHOLD = 0.5
+
+
+def extend_to_cause(start: float, end: float, action: np.ndarray | None, segments: list[Segment],
+                    max_len: float) -> float:
+    """New start for a clip that may begin after its own cause.
+
+    Reaction clips picked from the transcript start where the talking starts ("What? What?"), but
+    the crash or betrayal that caused it happened a few seconds earlier, often in silence. `action`
+    is a per-second 0..1 signal of things happening (game sounds, loudness bursts). Looking back up
+    to LOOK_BACK seconds, the burst closest to the start is taken as the cause and the clip starts
+    CAUSE_LEAD seconds before its onset (pulled back to the start of a sentence if one is running
+    there). The end (the payoff) is kept; the length cap limits how far back it can go."""
+    if action is None or action.size == 0:
+        return start
+    a = max(0, int(start - LOOK_BACK))
+    b = min(action.size, int(start) + 2)
+    hot = [t for t in range(a, b) if action[t] >= CAUSE_THRESHOLD]
+    if not hot:
+        return start
+    # The burst nearest to the start: walk back from its last hot second to its onset.
+    t = hot[-1]
+    while t - 1 >= a and action[t - 1] >= CAUSE_THRESHOLD:
+        t -= 1
+    new_start = max(0.0, t - CAUSE_LEAD)
+    if new_start >= start - 0.5:
+        return start
+    # Don't begin mid-sentence: back up to the sentence's start if it is close.
+    for seg in segments:
+        if seg.start < new_start < seg.end and new_start - seg.start <= 3.0:
+            new_start = seg.start
+            break
+    new_start = max(new_start, end - max_len)
+    return round(new_start, 2) if new_start < start - 0.5 else start

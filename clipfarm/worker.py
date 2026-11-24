@@ -109,6 +109,7 @@ class Worker:
         sent = 0
 
         def on_status(status: str, detail: str) -> None:
+            log.info("Job #%d [%s] %s", job_id, status, detail)
             self.db.update_job(job_id, status=status)
             self._show_status(job_id, detail)
             self.flush_telegram()

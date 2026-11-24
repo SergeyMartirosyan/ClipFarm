@@ -70,6 +70,12 @@ often visual (a clutch play, a fail, a jump scare, a glitch). Viewer clip titles
 Moments real viewers clipped, especially popular ones, are proven; strongly prefer them, and borrow \
 the wording of a good viewer clip title when it fits.
 
+Reactions need their cause. When the streamer reacts ("what?!", "NO WAY", laughing, screaming, \
+swearing), the clip must START BEFORE whatever caused the reaction (the crash, the kill, the betrayal, \
+the jump scare), usually 5-15 seconds before the first reaction words, even if nothing is said in that \
+stretch. A gap in the transcript right before a reaction is usually where the action happened. \
+"sounds: ..." notes on hot zones (crash, explosion, gunshot, screaming) mark that action.
+
 Scores are integers 0-10. Titles are short (max 70 characters), curiosity-driven, no clickbait lies, \
 no emojis. Hashtags: 3-5, lowercase, without the # sign. Reason: one sentence on why it works."""
 

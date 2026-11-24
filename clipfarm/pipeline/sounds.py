@@ -104,6 +104,13 @@ class SoundTagger:
         return SoundData(seconds=len(top), groups=arrays, top=top)
 
 
+def event_signal(data: SoundData, groups: tuple[str, ...] = ("action", "crowd")) -> np.ndarray:
+    """Like sound_signal, but only things happening in the game (crashes, explosions, gunfire,
+    crowd), not the streamer's own laughing or screaming. Used to find what a reaction was about."""
+    return sound_signal(SoundData(seconds=data.seconds, groups={g: a for g, a in data.groups.items() if g in groups},
+                                  top=data.top))
+
+
 def sound_signal(data: SoundData) -> np.ndarray:
     """0..1 per second: the strongest burst of any sound group above its own level in this stream.
     A group needs a real detection (score >= 0.15) to count at all."""

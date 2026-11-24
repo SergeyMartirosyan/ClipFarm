@@ -223,6 +223,10 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
         viewer_clips=tw.clips if tw else None,
     )
 
+    # Per-second "something happened in the game" signal for finding the cause of a reaction just
+    # before a clip's start. Only game sounds (crash, explosion, gunfire, crowd): the streamer's own
+    # shouting is the reaction itself, and chat lags behind the action.
+    action = sounds.event_signal(snd) if snd is not None else None
     snapped: list[Candidate] = []
     for c in candidates:
         cuts = scene_cuts(source.video_path, c.start - 3, c.start + 3) + scene_cuts(
@@ -231,6 +235,11 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
         start, end = select.snap_boundaries(
             c.start, c.end, segments, cuts, cfg.clip_min_seconds, cfg.clip_max_seconds, duration
         )
+        cause = select.extend_to_cause(start, end, action, segments, cfg.clip_max_seconds)
+        if cause < start:
+            log.info("Clip %.0f-%.0fs: starting %.0fs earlier to include what caused the reaction",
+                     start, end, start - cause)
+            start = cause
         c = select.with_bounds(c, start, end)
         c.signal_score = sig.strength(start, end)
         c.extra["audience"] = audience_note(tw, start, end, snd)

@@ -45,8 +45,10 @@ VISION_SCHEMA: dict = {
                     "visual": {"type": "integer"},
                     "hook": {"type": "integer"},
                     "menu_or_idle": {"type": "boolean"},
+                    "starts_late": {"type": "boolean"},
+                    "start_earlier": {"type": "integer"},
                 },
-                "required": ["id", "what_happens", "visual", "hook", "menu_or_idle"],
+                "required": ["id", "what_happens", "visual", "hook", "menu_or_idle", "starts_late", "start_earlier"],
             },
         },
         "ranking": {"type": "array", "items": {"type": "integer"}},
@@ -67,6 +69,11 @@ scrolling?
 - menu_or_idle: true only if most frames are a menu, settings, loading screen, queue, lobby, \
 desktop, or the streamer is away.
 
+- starts_late: you also get 2 frames from just BEFORE the clip. True if the clip starts after the \
+thing it is about already happened (e.g. the car has already crashed, the betrayal already happened, \
+the streamer is already reacting), so a viewer would miss the cause.
+- start_earlier: if starts_late, how many seconds earlier it should start (1-15), else 0.
+
 Then ranking: every clip id, best first, judged as a viewer scrolling TikTok who has never seen \
 this streamer. Prefer clips with a clear moment, a reaction, and a payoff."""
 
@@ -78,6 +85,8 @@ class Verdict:
     hook: int
     menu_or_idle: bool
     rank: int | None  # 0 = best; None when the model didn't rank this clip
+    starts_late: bool = False
+    start_earlier: int = 0
 
 
 def sample_frames(video: Path, start: float, end: float, n: int = FRAMES_PER_CLIP) -> list[bytes]:
@@ -103,18 +112,23 @@ def _said(segments: list[Segment], start: float, end: float, limit: int = 400) -
     return (text[:limit] + "…") if len(text) > limit else text
 
 
-def build_parts(candidates: list[Candidate], frames: list[list[bytes]], segments: list[Segment], types) -> list:
+def build_parts(candidates: list[Candidate], frames: list[list[bytes]], segments: list[Segment], types,
+                before: list[list[bytes]] | None = None) -> list:
     """Interleaved text + image parts: one block per candidate."""
     parts: list = [types.Part.from_text(text=f"{len(candidates)} candidate clips follow.")]
     for i, (c, imgs) in enumerate(zip(candidates, frames)):
+        pre = before[i] if before and i < len(before) else []
         header = (
             f"\n--- Clip id {i} ---\n"
             f"Length: {c.end - c.start:.0f}s. Proposed title: {c.title}\n"
             f"Said: {_said(segments, c.start, c.end) or '(nothing)'}\n"
-            f"Audience: {c.extra.get('audience') or 'no data'}\n"
-            f"Frames ({len(imgs)}, in order):"
+            f"Audience: {c.extra.get('audience') or 'no data'}"
         )
         parts.append(types.Part.from_text(text=header))
+        if pre:
+            parts.append(types.Part.from_text(text=f"{len(pre)} frames from the seconds BEFORE the clip starts:"))
+            parts += [types.Part.from_bytes(data=img, mime_type="image/jpeg") for img in pre]
+        parts.append(types.Part.from_text(text=f"Clip frames ({len(imgs)}, in order):"))
         parts += [types.Part.from_bytes(data=img, mime_type="image/jpeg") for img in imgs]
     return parts
 
@@ -141,6 +155,8 @@ def parse_verdicts(raw: str | dict, count: int) -> dict[int, Verdict]:
             hook=_clamp(item.get("hook")),
             menu_or_idle=bool(item.get("menu_or_idle", False)),
             rank=rank_of.get(cid),
+            starts_late=bool(item.get("starts_late", False)),
+            start_earlier=max(0, min(15, _clamp(item.get("start_earlier")) if item.get("start_earlier") is not None else 0)),
         )
     return out
 
@@ -152,7 +168,7 @@ def _clamp(v) -> int:
         return 5
 
 
-def apply_verdicts(candidates: list[Candidate], verdicts: dict[int, Verdict]) -> None:
+def apply_verdicts(candidates: list[Candidate], verdicts: dict[int, Verdict], max_len: float | None = None) -> None:
     """Fold the review into each candidate's score. Unreviewed candidates are left untouched."""
     ranked = max(1, sum(1 for v in verdicts.values() if v.rank is not None) - 1)
     for i, c in enumerate(candidates):
@@ -163,6 +179,13 @@ def apply_verdicts(candidates: list[Candidate], verdicts: dict[int, Verdict]) ->
         c.hook = round((c.hook + v.hook) / 2)
         c.menu_or_idle = v.menu_or_idle
         c.vision_note = v.what_happens
+        if v.starts_late and v.start_earlier > 0:
+            new_start = max(0.0, c.start - v.start_earlier)
+            if max_len:
+                new_start = max(new_start, c.end - max_len)
+            if new_start < c.start - 0.5:
+                c.extra["started_earlier"] = round(c.start - new_start, 1)
+                c.start = round(new_start, 2)
         # Best +1.0 … worst -1.0, linear in rank.
         c.rank_bonus = 0.0 if v.rank is None or ranked < 1 or len(verdicts) < 2 else 1.0 - 2.0 * min(v.rank, ranked) / ranked
 
@@ -189,6 +212,9 @@ class VisionReviewer:
         frames = [sample_frames(video, c.start, c.end) for c in candidates]
         if not any(frames):
             return "vision review skipped (could not read frames)"
+        before = [sample_frames(video, max(0.0, c.start - 10), c.start, n=2) if c.start >= 3 else [] for c in candidates]
+        max_len = getattr(self.cfg, "clip_max_seconds", None)
+        timeouts = 0  # only a timeout means "too heavy"; an overloaded model (503) gets the full set again
         client = self.judge._gemini_client()
         started = clock()
         errors: list[str] = []
@@ -197,11 +223,11 @@ class VisionReviewer:
             if clock() - started > TOTAL_BUDGET_S:
                 errors.append("time budget used up")
                 break
-            # Attempt 0: everything. Later: the best half (at least 4), 3 frames each.
-            n = len(candidates) if attempt == 0 else max(4, len(candidates) // (2 ** attempt))
-            keep = 4 if attempt == 0 else 3
+            # After each timeout: the best half (at least 4), 3 frames each.
+            n = len(candidates) if timeouts == 0 else max(4, len(candidates) // (2 ** timeouts))
+            keep = 4 if timeouts == 0 else 3
             subset = candidates[:n]
-            parts = build_parts(subset, [f[:keep] for f in frames[:n]], segments, types)
+            parts = build_parts(subset, [f[:keep] for f in frames[:n]], segments, types, before[:n])
             for thinking in (True, False):
                 cfg = dict(
                     system_instruction=SYSTEM_PROMPT,
@@ -225,13 +251,17 @@ class VisionReviewer:
                         continue  # this model doesn't take the thinking setting: same request without it
                     errors.append(f"{model}: {msg[:120]}")
                     log.warning("Vision review with %s (%d clips) failed: %s", model, n, msg[:300])
+                    if any(k in msg for k in ("DEADLINE", "504", "imeout", "timed out")):
+                        timeouts += 1
                     break
                 if verdicts:
-                    apply_verdicts(subset, verdicts)
+                    apply_verdicts(subset, verdicts, max_len)
                     idle = sum(1 for v in verdicts.values() if v.menu_or_idle)
+                    late = sum(1 for c in subset if c.extra.get("started_earlier"))
                     took = clock() - started
                     return (f"AI watched {len(verdicts)} of {len(candidates)} candidates ({model}, {took:.0f}s)"
-                            + (f", {idle} menu/idle" if idle else ""))
+                            + (f", {idle} menu/idle" if idle else "")
+                            + (f", {late} started earlier to show the cause" if late else ""))
                 errors.append(f"{model}: empty review")
                 break
         log.warning("Vision review failed: %s", "; ".join(errors))

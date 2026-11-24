@@ -189,3 +189,40 @@ def test_dead_air_is_trimmed_only_when_quiet():
     assert select.dead_air_trim(3.0, 100, 40, 15, loud_db=loud, sound=sound) == 0
     assert select.dead_air_trim(3.0, 100, 16, 15, loud_db=loud) == pytest.approx(1.0)  # capped by min length
     assert select.dead_air_trim(3.0, 100, 15.5, 15, loud_db=loud) == 0  # too little room to bother
+
+
+# --- reactions need their cause --------------------------------------------------------------------
+
+def test_clip_extends_back_to_the_crash():
+    from clipfarm.pipeline.transcribe import Segment
+
+    action = np.zeros(400, dtype=np.float32)
+    action[200:203] = 0.9            # the crash at 200 s (silent in the transcript)
+    segs = [Segment(206.0, 209.0, "what? what?"), Segment(209.5, 230.0, "bro I just crashed")]
+    assert select.extend_to_cause(206.0, 236.0, action, segs, 60) == 198.0     # 2 s before the crash
+    assert select.extend_to_cause(206.0, 236.0, None, segs, 60) == 206.0       # no sound model: unchanged
+    quiet = np.zeros(400, dtype=np.float32)
+    assert select.extend_to_cause(206.0, 236.0, quiet, segs, 60) == 206.0      # nothing happened before
+    assert select.extend_to_cause(206.0, 262.0, action, segs, 60) == 202.0     # capped by max length
+
+
+def test_cause_lookback_uses_nearest_burst_and_sentence_start():
+    from clipfarm.pipeline.transcribe import Segment
+
+    action = np.zeros(400, dtype=np.float32)
+    action[150:152] = 0.9            # older, unrelated (outside the 15 s window)
+    action[193:195] = 0.8            # earlier burst inside the window
+    action[200:202] = 0.9            # the nearest burst: the cause
+    segs = [Segment(197.0, 199.5, "watch this"), Segment(206.0, 209.0, "NO WAY")]
+    # 2 s before 200 = 198, which is mid-sentence "watch this" -> back to 197.
+    assert select.extend_to_cause(206.0, 236.0, action, segs, 60) == 197.0
+
+
+def test_event_signal_ignores_streamer_screaming():
+    n = 300
+    groups = {g: np.zeros(n, dtype=np.float32) for g in sounds.GROUPS}
+    groups["scream"][100:103] = 0.95
+    groups["action"][90:92] = 0.9
+    data = sounds.SoundData(seconds=n, groups=groups, top=[""] * n)
+    ev = sounds.event_signal(data)
+    assert ev[101] == 0 and ev[90] > 0.5
