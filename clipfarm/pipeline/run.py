@@ -283,7 +283,13 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
         log.info("Dropped %d candidates: %s", len(dropped), "; ".join(sorted({c.extra["exclude"] for c in dropped})))
         shortlist = [c for c in shortlist if not c.extra.get("exclude")]
     chosen = select.choose(shortlist, cfg.clips_per_video)
-    # Present in story order; scores are shown on each clip.
+    for rank, c in enumerate(chosen, start=1):  # choose() returns best first
+        c.extra["rank"] = rank
+        if c.cover_at is None:  # no vision verdict: the strongest second of the clip
+            a, b = int(c.start), max(int(c.start) + 1, int(c.end))
+            window = sig.combined[a:b]
+            c.cover_at = float(a + int(window.argmax())) if window.size else c.start + 1
+    # Present in story order; scores and ranks are shown on each clip.
     chosen.sort(key=lambda c: c.start)
     if not chosen:
         raise PipelineError("The judge found no usable clips in this video.")
@@ -311,6 +317,7 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
             stream_cam=stream_cam, cam_searched=cam_searched,
         )
         ass_path = None
+        words: list = []
         if audio is not None:
             clip_audio = extract_audio(source.video_path, workdir / f"clip-{i:02d}.wav", c.start, c.end)
             words = [w for s in transcriber.transcribe(clip_audio, words=True) for w in s.words]
@@ -322,10 +329,12 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
                 log.info("Clip %d: trimming %.1fs of dead air before the first word", i, cut)
                 c.start = round(c.start + cut, 2)
                 words = [transcribe.Word(w.start - cut, w.end - cut, w.text) for w in words if w.end > cut]
-            if words:
-                ass_path = captions.write_ass(
-                    words, workdir / f"clip-{i:02d}.ass", margin_v=render.caption_margin(lay)
-                )
+        if words or c.overlay:
+            ass_path = captions.write_ass(
+                words, workdir / f"clip-{i:02d}.ass", margin_v=render.caption_margin(lay),
+                hook=c.overlay, hook_pos=render.hook_position(lay), duration=c.end - c.start,
+            )
+        c.extra["cover_offset"] = round(min(max(0.0, (c.cover_at or c.start) - c.start), max(0.0, c.end - c.start - 0.5)), 2)
         final = render.render_clip(
             source.video_path, c.start, c.end, lay, ass_path, outdir / f"clip-{i:02d}.mp4", vinfo.has_audio
         )

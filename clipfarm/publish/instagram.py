@@ -128,15 +128,18 @@ class Instagram:
         rows = data.get("data") or [{}]
         return rows[0]
 
-    def publish_reel(self, video_url: str, caption: str) -> tuple[str, str]:
-        """Returns (media id, permalink)."""
+    def publish_reel(self, video_url: str, caption: str, cover_offset: float | None = None) -> tuple[str, str]:
+        """Returns (media id, permalink). cover_offset: seconds into the video for the cover frame."""
         uid = self.user_id()
-        container = self._request("POST", f"{self.base}/{uid}/media", {
+        params = {
             "media_type": "REELS",
             "video_url": video_url,
             "caption": caption,
             "share_to_feed": "true",
-        })["id"]
+        }
+        if cover_offset is not None:
+            params["thumb_offset"] = str(int(cover_offset * 1000))
+        container = self._request("POST", f"{self.base}/{uid}/media", params)["id"]
         deadline = self._clock() + POLL_TIMEOUT
         while True:
             status = self._request("GET", f"{self.base}/{container}", {"fields": "status_code,status"})

@@ -265,7 +265,7 @@ def test_starts_late_moves_start_back_within_max_length():
 
 def _verdict(cid, **kw):
     base = {"id": cid, "what_happens": "x", "visual": 6, "hook": 6, "menu_or_idle": False,
-            "starts_late": False, "start_earlier": 0, "cutscene": False, "streamer_reaction": 5}
+            "starts_late": False, "start_earlier": 0, "cutscene": False, "streamer_reaction": 5, "best_frame": 0}
     base.update(kw)
     return base
 
@@ -354,3 +354,15 @@ def test_no_claude_when_cap_reached(monkeypatch):
 
     monkeypatch.setattr(vision, "sample_frames", lambda video, s, e, n=4: [b"\xff\xd8"] * n)
     assert "failed" in vision.VisionReviewer(SimpleNamespace(gemini_api_key="k"), Judge()).review("v", _cands(2), [])
+
+
+def test_best_frame_sets_the_cover():
+    c = _cand(100, 120)
+    c.extra["frame_times"] = [102.5, 107.5, 112.5, 117.5]
+    v = vision.parse_verdicts(json.dumps({"clips": [_verdict(0, best_frame=2)], "ranking": [0]}), 1)
+    vision.apply_verdicts([c], v)
+    assert c.cover_at == 112.5
+    c2 = _cand(100, 120)
+    c2.extra["frame_times"] = [102.5]
+    vision.apply_verdicts([c2], vision.parse_verdicts(json.dumps({"clips": [_verdict(0, best_frame=9)], "ranking": []}), 1))
+    assert c2.cover_at is None  # out of range: ignored

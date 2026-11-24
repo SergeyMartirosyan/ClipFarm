@@ -49,6 +49,10 @@ CREATE TABLE IF NOT EXISTS clips (
     telegram_message_id INTEGER,
     deliver_attempts    INTEGER NOT NULL DEFAULT 0,
     decided_by          TEXT NOT NULL DEFAULT '',
+    overlay_text        TEXT NOT NULL DEFAULT '',
+    caption             TEXT NOT NULL DEFAULT '',
+    cover_offset        REAL,
+    rank                INTEGER,
     created_at          REAL NOT NULL,
     decided_at          REAL
 );
@@ -126,6 +130,10 @@ class Database:
                 con.execute("ALTER TABLE clips ADD COLUMN deliver_attempts INTEGER NOT NULL DEFAULT 0")
             if "decided_by" not in cols:
                 con.execute("ALTER TABLE clips ADD COLUMN decided_by TEXT NOT NULL DEFAULT ''")
+            for col, decl in (("overlay_text", "TEXT NOT NULL DEFAULT ''"), ("caption", "TEXT NOT NULL DEFAULT ''"),
+                              ("cover_offset", "REAL"), ("rank", "INTEGER")):
+                if col not in cols:
+                    con.execute(f"ALTER TABLE clips ADD COLUMN {col} {decl}")
             job_cols = {r[1] for r in con.execute("PRAGMA table_info(jobs)")}
             if "attempts" not in job_cols:
                 con.execute("ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")

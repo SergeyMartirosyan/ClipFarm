@@ -49,9 +49,10 @@ VISION_SCHEMA: dict = {
                     "start_earlier": {"type": "integer"},
                     "cutscene": {"type": "boolean"},
                     "streamer_reaction": {"type": "integer"},
+                    "best_frame": {"type": "integer"},
                 },
                 "required": ["id", "what_happens", "visual", "hook", "menu_or_idle", "starts_late", "start_earlier",
-                             "cutscene", "streamer_reaction"],
+                             "cutscene", "streamer_reaction", "best_frame"],
             },
         },
         "ranking": {"type": "array", "items": {"type": "integer"}},
@@ -81,6 +82,9 @@ the streamer is already reacting), so a viewer would miss the cause.
 - streamer_reaction (0-10): how visible and strong the streamer's own reaction is (face cam, voice: \
 shock, laughing, shouting, commentary). A cutscene nobody reacts to is just the game's footage.
 
+- best_frame: which of the clip frames (0 = first) would make the best cover image: the most \
+expressive reaction or the most striking moment, without spoiling the payoff.
+
 Then ranking: every clip id, best first, judged as a viewer scrolling TikTok who has never seen \
 this streamer. Prefer clips with a clear moment, a reaction, and a payoff. The streamer is the show: \
 rank gameplay moments and big reactions above cutscenes the streamer barely reacts to."""
@@ -97,6 +101,7 @@ class Verdict:
     start_earlier: int = 0
     cutscene: bool = False
     streamer_reaction: int = 5
+    best_frame: int | None = None
 
 
 def sample_frames(video: Path, start: float, end: float, n: int = FRAMES_PER_CLIP) -> list[bytes]:
@@ -203,6 +208,7 @@ def parse_verdicts(raw: str | dict, count: int) -> dict[int, Verdict]:
             menu_or_idle=bool(item.get("menu_or_idle", False)),
             rank=rank_of.get(cid),
             starts_late=bool(item.get("starts_late", False)),
+            best_frame=int(item["best_frame"]) if isinstance(item.get("best_frame"), (int, float)) else None,
             cutscene=bool(item.get("cutscene", False)),
             streamer_reaction=_clamp(item.get("streamer_reaction")) if item.get("streamer_reaction") is not None else 5,
             start_earlier=max(0, min(15, _clamp(item.get("start_earlier")) if item.get("start_earlier") is not None else 0)),
@@ -228,6 +234,9 @@ def apply_verdicts(candidates: list[Candidate], verdicts: dict[int, Verdict], ma
         c.hook = round((c.hook + v.hook) / 2)
         c.menu_or_idle = v.menu_or_idle
         c.vision_note = v.what_happens
+        times = c.extra.get("frame_times") or []
+        if v.best_frame is not None and 0 <= v.best_frame < len(times):
+            c.cover_at = times[v.best_frame]
         # A cutscene is only worth clipping for the streamer's reaction to it, and publishers remove
         # standalone cutscenes: without a strong reaction the clip is dropped, with one it loses a point.
         c.penalty = 0.0
@@ -269,6 +278,9 @@ class VisionReviewer:
         from google.genai import types
 
         frames = [sample_frames(video, c.start, c.end) for c in candidates]
+        for c in candidates:  # absolute times of the frames sample_frames took (for the cover)
+            c.extra["frame_times"] = [c.start + (c.end - c.start) * (k + 0.5) / FRAMES_PER_CLIP
+                                      for k in range(FRAMES_PER_CLIP)]
         if not any(frames):
             return "vision review skipped (could not read frames)"
         before = [sample_frames(video, max(0.0, c.start - 10), c.start, n=2) if c.start >= 3 else [] for c in candidates]

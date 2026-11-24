@@ -38,8 +38,11 @@ CLIP_SCHEMA: dict = {
                     "standalone": {"type": "integer", "description": "0-10"},
                     "payoff": {"type": "integer", "description": "0-10"},
                     "reason": {"type": "string"},
+                    "overlay": {"type": "string"},
+                    "caption": {"type": "string"},
                 },
-                "required": ["start", "end", "title", "hashtags", "hook", "standalone", "payoff", "reason"],
+                "required": ["start", "end", "title", "hashtags", "hook", "standalone", "payoff", "reason",
+                             "overlay", "caption"],
                 "additionalProperties": False,
             },
         }
@@ -89,8 +92,21 @@ the jump scare), usually 5-15 seconds before the first reaction words, even if n
 stretch. A gap in the transcript right before a reaction is usually where the action happened. \
 "sounds: ..." notes on hot zones (crash, explosion, gunshot, screaming) mark that action.
 
-Scores are integers 0-10. Titles are short (max 70 characters), curiosity-driven, no clickbait lies, \
-no emojis. Hashtags: 3-5, lowercase, without the # sign. Reason: one sentence on why it works."""
+Short wins: completion rate is what the platforms reward. Aim for 20-30 seconds: open on the action or \
+its cause, cut everything that doesn't build to the payoff, and end right after the payoff lands (a \
+clean end makes the clip loop).
+
+For each clip write:
+- overlay: the text shown in a box on top of the video for the whole clip, like viral reels do. It gives \
+a viewer who has never seen this stream the context at a glance and makes them want to watch, ideally \
+with a joke or a tease ("Speed thought he was a stealth expert", "POV: you trust your getaway driver", \
+"He did NOT see this coming"). Max 8 words. No emoji, no hashtags, don't spoil the punchline.
+- title: for YouTube Shorts, max 70 characters, curiosity-driven, no clickbait lies, no emoji.
+- caption: the post text for Instagram/TikTok: one hook sentence plus one sentence of context, using the \
+words people would search for (streamer name, game, what happens). No hashtags in it.
+- hashtags: 3-5, lowercase, without the # sign: the streamer, the game, the kind of moment.
+- reason: one sentence on why it works.
+Scores are integers 0-10."""
 
 
 @dataclass
@@ -111,6 +127,9 @@ class Candidate:
     menu_or_idle: bool = False      # menu, loading screen, AFK: a bad clip whatever was said
     rank_bonus: float = 0.0         # -1..+1 from ranking the finalists against each other
     vision_note: str = ""           # what the model saw
+    overlay: str = ""               # hook text shown on top of the video
+    caption: str = ""               # post text for Instagram/TikTok
+    cover_at: float | None = None   # absolute second of the best cover frame
     penalty: float = 0.0            # points off from the vision review (e.g. a cutscene nobody reacts to)
 
     @property
@@ -213,7 +232,7 @@ def build_user_prompt(
         f"Channel: {uploader or 'unknown'}",
         f"Duration: {duration:.0f} seconds",
         "",
-        f"Return up to {want} clips, best first, each {min_len}-{max_len} seconds long, not overlapping.",
+        f"Return up to {want} clips, best first, each {min_len}-{max_len} seconds long (shorter is better), not overlapping.",
         "Use the [seconds] timestamps from the transcript for start and end.",
     ]
     if approved_examples or skipped_examples:
@@ -268,6 +287,8 @@ def parse_candidates(raw: str | dict, duration: float, model: str) -> list[Candi
                 payoff=_clamp_int(item.get("payoff")),
                 reason=str(item.get("reason", "")).strip(),
                 model=model,
+                overlay=str(item.get("overlay", "")).strip()[:90],
+                caption=str(item.get("caption", "")).strip()[:400],
             )
         )
     return out

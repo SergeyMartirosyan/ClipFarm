@@ -46,8 +46,19 @@ def video_filter(layout: Layout, ass_path: Path | None) -> str:
 
 
 def caption_margin(layout: Layout) -> int:
-    """Captions sit just inside the gameplay panel for facecam, lower-middle otherwise."""
-    return OUT_H - CAM_H - 260 if layout.kind == "facecam" else 560
+    """Spoken captions: lower third (bottom margin in px), clear of the hook text."""
+    return 470 if layout.kind == "facecam" else 560
+
+
+def hook_position(layout: Layout) -> tuple[int, int, int]:
+    """(ASS alignment, x, y) for the hook text box.
+    facecam: centred on the seam between webcam and game; blur: just above the video;
+    full-frame layouts: near the top."""
+    if layout.kind == "facecam":
+        return 5, OUT_W // 2, CAM_H
+    if layout.kind == "blur":
+        return 2, OUT_W // 2, 620
+    return 8, OUT_W // 2, 230
 
 
 def render_clip(

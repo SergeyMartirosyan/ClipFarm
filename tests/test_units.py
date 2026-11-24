@@ -378,3 +378,45 @@ def test_choose_layout_uses_stream_cam(monkeypatch, tmp_path):
     monkeypatch.setattr(layout, "detect_faces", lambda *a, **k: [[(125, 815, 112, 128)] for _ in range(12)])
     lay = layout.choose_layout("v", 0, 30, 1920, 1080, model, stream_cam=cam, cam_searched=True)
     assert lay.kind == "facecam" and lay.cam.x < 200
+
+
+# --- views pack: hook overlay, post caption, cover, scores ------------------------------------------
+
+def test_judge_returns_overlay_and_caption():
+    raw = json.dumps({"clips": [{"start": 10, "end": 35, "title": "t", "hashtags": ["gta6"], "hook": 8,
+                                 "standalone": 7, "payoff": 8, "reason": "r",
+                                 "overlay": "Speed thought he was a stealth expert", "caption": "Speed tries stealth."}]})
+    c = parse_candidates(raw, 100, "m")[0]
+    assert c.overlay == "Speed thought he was a stealth expert" and c.caption == "Speed tries stealth."
+    assert "overlay" in CLIP_SCHEMA["properties"]["clips"]["items"]["required"]
+
+
+def test_hook_overlay_in_ass_without_emoji():
+    ass = captions.build_ass([Word(0.1, 0.5, "hi")], hook='"POV: he trusted the getaway driver 😂🔥"',
+                             hook_pos=(5, 540, 768), duration=24.0)
+    hook_line = [l for l in ass.splitlines() if ",Hook," in l and l.startswith("Dialogue")][0]
+    assert "\\an5\\pos(540,768)" in hook_line and hook_line.endswith("POV: he trusted the getaway driver")
+    assert "0:00:24.00" in hook_line and "😂" not in ass
+    no_event = captions.build_ass([], hook="x", duration=0)
+    assert "Style: Hook," in no_event and ",Hook," not in no_event  # style defined, no event without a duration
+    assert captions.hook_font_size("short") > captions.hook_font_size("a" * 50)
+
+
+def test_telegram_caption_shows_ai_score_rank_and_texts(tmp_path):
+    d = dbm.Database(tmp_path / "t.db")
+    cid = d.add_clip(job_id=d.add_job("u"), idx=2, total=12, start=0, end=24, title="Stealth master",
+                     llm_score=8.4, rank=1, overlay_text="He did NOT see this coming",
+                     caption="Speed tries stealth in GTA 6.", layout="facecam", judge_model="m")
+    text = messages.clip_caption(d.get_clip(cid))
+    assert "🤖 AI 8.4/10 · #1 of 12" in text
+    assert "🔝 On video: He did NOT see this coming" in text and "📝 Speed tries stealth in GTA 6." in text
+
+
+def test_shorter_clips_by_default(tmp_path, monkeypatch):
+    from clipfarm.config import load_config
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("CLIP_MIN_SECONDS", raising=False)
+    monkeypatch.delenv("CLIP_MAX_SECONDS", raising=False)
+    cfg = load_config(env_file=str(tmp_path / "none.env"))
+    assert (cfg.clip_min_seconds, cfg.clip_max_seconds) == (15, 35)

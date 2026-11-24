@@ -45,6 +45,9 @@ Telegram link ─► yt-dlp ─► transcript ─► signals + LLM judge ─► 
 | Ranking | `final = 0.5 × LLM score + 0.5 × signal strength + rank bonus (−1…+1) − 3 if menu/idle`, where the LLM score includes the visual score once reviewed; non-overlapping, top N |
 | Layout | OpenCV **YuNet** face detection on 12 frames: small steady webcam face → `facecam` (cam 40% top / game 60% bottom); big face → `face` (9:16 crop on the speaker); else → `blur` (full frame over a blurred copy). Per-channel overrides in `presets.json`. |
 | Captions | Whisper word timestamps on the clip, 3-word uppercase groups, the spoken word highlighted, burned in with ffmpeg/libass |
+| Hook text | The AI writes a short context line (max 8 words, e.g. "POV: you trust your getaway driver"), shown in a white box for the whole clip: on the webcam/game seam, above the video, or near the top |
+| Post texts | Per clip: YouTube title, an Instagram/TikTok caption with searchable words, 3-5 hashtags, and a cover frame (the most expressive one, picked by the vision review) |
+| Length | 15-35 s by default (`CLIP_MIN_SECONDS` / `CLIP_MAX_SECONDS`), ending right after the payoff |
 
 ## Install on the VM (one command)
 

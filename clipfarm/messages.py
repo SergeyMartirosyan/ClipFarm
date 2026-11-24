@@ -81,11 +81,19 @@ def posts_lines(posts, tz_name: str) -> list[str]:
 def clip_caption(clip: Mapping[str, Any], posts=None, tz_name: str = "UTC") -> str:
     dur = clip["end"] - clip["start"]
     tags = " ".join(f"#{t}" for t in clip["hashtags"].split() if t)
+    rank = _get(clip, "rank", None)
     lines = [
-        f"🎬 Clip {clip['idx']}/{clip['total']} · ⭐ {clip['final_score']:.1f}/10 · {dur:.0f}s · {clip['layout']}",
+        f"🎬 Clip {clip['idx']}/{clip['total']} · 🤖 AI {clip['llm_score']:.1f}/10"
+        + (f" · #{rank} of {clip['total']}" if rank else "") + f" · {dur:.0f}s · {clip['layout']}",
         "",
         clip["title"],
     ]
+    overlay = _get(clip, "overlay_text")
+    if overlay:
+        lines.append(f"🔝 On video: {overlay}")
+    post_text = _get(clip, "caption")
+    if post_text:
+        lines.append(f"📝 {post_text}")
     if tags:
         lines.append(tags)
     lines += [

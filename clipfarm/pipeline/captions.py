@@ -46,23 +46,44 @@ def _escape(text: str) -> str:
     return text.replace("\\", "").replace("{", "(").replace("}", ")").upper()
 
 
-def build_ass(words: list[Word], margin_v: int = 640, font: str = "DejaVu Sans") -> str:
-    """Word times must be relative to the clip start."""
+def clean_hook(text: str, limit: int = 70) -> str:
+    """Hook overlay text: one line of plain text. Emoji and other symbols the caption font can't draw
+    are dropped (they would render as empty boxes)."""
+    kept = "".join(ch for ch in text if ord(ch) < 0x2000 or 0x2010 <= ord(ch) <= 0x206F)
+    kept = " ".join(kept.replace("\n", " ").split()).strip(" \"'#")
+    return kept[:limit].rstrip()
+
+
+def hook_font_size(text: str) -> int:
+    n = len(text)
+    return 66 if n <= 28 else 58 if n <= 45 else 50
+
+
+def build_ass(words: list[Word], margin_v: int = 640, font: str = "DejaVu Sans",
+              hook: str = "", hook_pos: tuple[int, int, int] = (8, 540, 200), duration: float = 0.0) -> str:
+    """Word times must be relative to the clip start. `hook` is a short context line shown for the
+    whole clip in a white box (the "POV: …" text of viral reels); hook_pos = (alignment, x, y)."""
+    hook = clean_hook(hook)
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
 PlayResY: 1920
-WrapStyle: 2
+WrapStyle: 0
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Cap,{font},78,{WHITE},{WHITE},{BLACK},&H80000000,-1,0,0,0,100,100,0,0,1,6,2,2,60,60,{margin_v},1
+Style: Hook,{font},{hook_font_size(hook)},{BLACK},{BLACK},{WHITE},{WHITE},-1,0,0,0,100,100,0,0,3,14,0,8,90,90,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     lines: list[str] = []
+    if hook and duration > 0:
+        an, x, y = hook_pos
+        text = hook.replace("{", "(").replace("}", ")")
+        lines.append(f"Dialogue: 1,{_ts(0)},{_ts(duration)},Hook,,0,0,0,,{{\\an{an}\\pos({x},{y})}}{text}")
     groups = group_words(words)
     for gi, group in enumerate(groups):
         group_end = group[-1].end
@@ -82,6 +103,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     return header + "\n".join(lines) + "\n"
 
 
-def write_ass(words: list[Word], path: Path, margin_v: int = 640) -> Path:
-    Path(path).write_text(build_ass(words, margin_v=margin_v), encoding="utf-8")
+def write_ass(words: list[Word], path: Path, margin_v: int = 640, hook: str = "",
+              hook_pos: tuple[int, int, int] = (8, 540, 200), duration: float = 0.0) -> Path:
+    Path(path).write_text(build_ass(words, margin_v=margin_v, hook=hook, hook_pos=hook_pos, duration=duration),
+                          encoding="utf-8")
     return Path(path)

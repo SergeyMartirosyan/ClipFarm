@@ -215,8 +215,9 @@ class FakePublisher:
         self.error = error
         self.calls = []
 
-    def publish_reel(self, url, caption):
+    def publish_reel(self, url, caption, cover_offset=None):
         self.calls.append((url, caption))
+        self.cover = cover_offset
         if self.error:
             raise self.error
         return "M1", "https://www.instagram.com/reel/xyz/"
@@ -312,3 +313,19 @@ def test_poster_skips_clip_that_was_undone(tmp_path):
     d.update_clip(cid, status=dbm.PENDING_REVIEW)  # undone after scheduling, before cancel ran
     p.tick()
     assert pub.calls == [] and d.posts_for_clip(cid)[0]["status"] == dbm.POST_CANCELLED
+
+
+def test_poster_uses_post_caption_and_cover(tmp_path):
+    pub = FakePublisher()
+    p, d, cid, tg, _, _ = _poster(tmp_path, pub, {"caption": "Speed tries stealth in GTA 6. It goes badly.",
+                                                   "cover_offset": 7.5, "public_url": "https://pub-x.r2.dev/a.mp4"})
+    p.tick()
+    assert pub.calls[0][1] == "Speed tries stealth in GTA 6. It goes badly.\n\n#gta6" and pub.cover == 7.5
+
+
+def test_reel_cover_offset_is_sent_in_ms(tmp_path):
+    g = Graph()
+    ig, _, _ = _ig(tmp_path, g)
+    ig.publish_reel("https://pub-x.r2.dev/a.mp4", "c", cover_offset=7.5)
+    container = [c for c in g.calls if c[1] == "/1789/media"][0][2]
+    assert container["thumb_offset"] == "7500"

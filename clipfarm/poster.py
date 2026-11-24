@@ -90,8 +90,8 @@ class Poster:
                 return
             if publisher is None:
                 raise InstagramError(f"{name} isn't connected (no credentials in .env)", transient=False)
-            caption = build_caption(clip["title"], clip["hashtags"], self.cfg.caption_suffix)
-            media_id, link = publisher.publish_reel(self.public_url(clip), caption)
+            caption = build_caption(clip["caption"] or clip["title"], clip["hashtags"], self.cfg.caption_suffix)
+            media_id, link = publisher.publish_reel(self.public_url(clip), caption, clip["cover_offset"])
         except InstagramError as exc:
             self._failed(row, clip, name, exc)
             return

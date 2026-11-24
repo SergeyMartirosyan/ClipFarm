@@ -126,6 +126,8 @@ class Worker:
                 llm_score=c.llm_score, signal_score=c.signal_score, final_score=c.final_score,
                 judge_model=c.model, layout=rc.layout, local_path=str(rc.final_path),
                 r2_key=rc.r2_key, public_url=rc.public_url,
+                overlay_text=c.overlay, caption=c.caption, cover_offset=c.extra.get("cover_offset"),
+                rank=c.extra.get("rank"),
             )
             sent += 1
             self.flush_telegram()  # delivers this clip, plus any that failed earlier
