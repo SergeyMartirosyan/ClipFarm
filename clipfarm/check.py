@@ -126,6 +126,12 @@ def check_telegram(cfg) -> None:
         return
     if body.get("ok"):
         report("OK", "Telegram", f"bot @{body['result']['username']} ({who}), owner id {cfg.telegram_owner_id}, {took:.1f}s")
+        if cfg.telegram_chat_id > 0:
+            report("FAIL", "Telegram group", f"TELEGRAM_CHAT_ID={cfg.telegram_chat_id} is missing the minus sign: "
+                   f"group ids are negative (-{cfg.telegram_chat_id})")
+        elif cfg.telegram_chat_id:
+            report("OK", "Telegram group", f"bot works only in group {cfg.telegram_chat_id}; "
+                   f"{len(cfg.allowed_user_ids)} people allowed")
     elif body.get("error_code") == 429:
         retry = (body.get("parameters") or {}).get("retry_after")
         report("FAIL", "Telegram", f"{who}: Telegram refuses to log this bot in right now (429, retry after {retry}s, "

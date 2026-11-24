@@ -320,6 +320,9 @@ def main() -> None:
     app.add_handler(MessageHandler(owner & filters.TEXT & ~filters.COMMAND, on_text))
     app.add_handler(CallbackQueryHandler(on_button))
 
+    if cfg.telegram_chat_id > 0:
+        log.warning("TELEGRAM_CHAT_ID=%s is positive, but group ids are negative (e.g. -%s). The bot will "
+                    "ignore the group until it is fixed in .env.", cfg.telegram_chat_id, cfg.telegram_chat_id)
     username = wait_for_telegram(cfg)
     log.info("Bot @%s started; users allowed: %s; reports to %s", username,
              ", ".join(str(u) for u in sorted(cfg.allowed_user_ids)),

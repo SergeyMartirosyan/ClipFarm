@@ -277,7 +277,8 @@ def test_check_telegram_messages(monkeypatch, answer, expect):
 
     monkeypatch.setattr(check.httpx, "get", fake_get)
     check.results.clear()
-    cfg = SimpleNamespace(telegram_token=TOKEN, telegram_owner_id=5, telegram_api_base="https://api.telegram.org")
+    cfg = SimpleNamespace(telegram_token=TOKEN, telegram_owner_id=5, telegram_api_base="https://api.telegram.org",
+                          telegram_chat_id=0, allowed_user_ids={5})
     check.check_telegram(cfg)
     level, _, detail = check.results[-1]
     assert (level == "OK") if expect == "OK" else (expect in detail and level == "FAIL")
@@ -413,3 +414,13 @@ def test_transcript_cache_roundtrip(tmp_path):
     assert transcribe.load_segments(tmp_path / "missing.json") == []
     (tmp_path / "bad.json").write_text("{half")
     assert transcribe.load_segments(tmp_path / "bad.json") == []
+
+
+def test_check_flags_positive_group_id(monkeypatch):
+    from clipfarm import check
+
+    monkeypatch.setattr(check.httpx, "get", lambda url, timeout: httpx.Response(200, json={"ok": True, "result": {"username": "B"}}))
+    check.results.clear()
+    check.check_telegram(SimpleNamespace(telegram_token=TOKEN, telegram_owner_id=5, telegram_api_base="https://api.telegram.org",
+                                         telegram_chat_id=5495066032, allowed_user_ids={5}))
+    assert check.results[-1][0] == "FAIL" and "minus sign" in check.results[-1][2]
