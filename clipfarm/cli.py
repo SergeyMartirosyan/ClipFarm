@@ -45,6 +45,8 @@ def cmd_process(args) -> None:
         clips = process(
             args.url, job_id, cfg, transcriber=transcriber, db=db,
             on_status=on_status, on_clip=on_clip, keep_workdir=args.keep_work,
+            on_source=lambda src: db.update_job(job_id, source_title=src.title, uploader=src.uploader,
+                                                duration=src.duration),
         )
     except Exception as exc:
         db.update_job(job_id, status=dbm.FAILED, error=str(exc))
