@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import shutil
 from concurrent.futures import ThreadPoolExecutor
@@ -115,16 +116,26 @@ def process(
     keep_workdir: bool = False,
     attempt: int = 1,
 ) -> list[RenderedClip]:
-    workdir = cfg.work_dir / f"job-{job_id}"
+    workdir = work_dir_for(cfg, url)
     # A re-run (after a worker restart) gets its own folder: earlier clips may already be approved.
     outdir = cfg.clips_dir / f"job-{job_id}" / f"try-{attempt}"
     workdir.mkdir(parents=True, exist_ok=True)
     outdir.mkdir(parents=True, exist_ok=True)
     try:
-        return _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_clip, on_source)
-    finally:
-        if not keep_workdir:
-            shutil.rmtree(workdir, ignore_errors=True)
+        result = _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_clip, on_source)
+    except BaseException:
+        # Keep the (possibly multi-GB) download: sending the same link again skips re-downloading.
+        # Old leftovers are removed by the regular cleanup.
+        log.info("Job failed; keeping %s so a retry of this link reuses the download", workdir)
+        raise
+    if not keep_workdir:
+        shutil.rmtree(workdir, ignore_errors=True)
+    return result
+
+
+def work_dir_for(cfg, url: str) -> Path:
+    """Scratch folder per source URL (not per job), so retries find the earlier download."""
+    return cfg.work_dir / ("src-" + hashlib.sha1(url.strip().encode()).hexdigest()[:12])
 
 
 def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_clip, on_source):

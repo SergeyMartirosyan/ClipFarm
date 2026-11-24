@@ -56,12 +56,16 @@ def clip_key(job_id: int, idx: int, attempt: int = 1, created: float | None = No
     return f"clips/{day}/job-{job_id}/try-{attempt}/clip-{idx:02d}.mp4"
 
 
-def cleanup_local(clips_dir: Path, days: int) -> int:
-    """Delete local per-job clip folders older than `days`."""
-    cutoff = time.time() - days * 86400
+def cleanup_local(clips_dir: Path, days: int, work_dir: Path | None = None, work_days: float = 2) -> int:
+    """Delete per-job clip folders older than `days`, and downloads kept from failed jobs
+    (work_dir/src-*) older than `work_days`."""
     removed = 0
-    for d in Path(clips_dir).glob("job-*"):
-        if d.is_dir() and d.stat().st_mtime < cutoff:
-            shutil.rmtree(d, ignore_errors=True)
-            removed += 1
+    targets = [(Path(clips_dir).glob("job-*"), time.time() - days * 86400)]
+    if work_dir is not None:
+        targets.append((Path(work_dir).glob("src-*"), time.time() - work_days * 86400))
+    for folders, cutoff in targets:
+        for d in folders:
+            if d.is_dir() and d.stat().st_mtime < cutoff:
+                shutil.rmtree(d, ignore_errors=True)
+                removed += 1
     return removed

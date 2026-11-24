@@ -322,3 +322,58 @@ def test_non_numeric_owner_id_is_a_clear_error(tmp_path, monkeypatch):
     monkeypatch.setenv("TELEGRAM_OWNER_ID", "@sergey")
     with pytest.raises(SystemExit, match="TELEGRAM_OWNER_ID"):
         load_config(env_file=str(tmp_path / "none.env"))
+
+
+# --- whisper gets samples, not a file path -----------------------------------------------------------
+
+def test_transcriber_passes_samples_not_path(tmp_path, monkeypatch):
+    """faster-whisper decodes file paths with PyAV, which breaks on some version pairs (av 19).
+    The transcriber must hand it a float32 array of our 16 kHz WAV instead."""
+    import subprocess
+
+    import numpy as np
+
+    from clipfarm.media import extract_audio
+    from clipfarm.pipeline.transcribe import Transcriber
+
+    src = tmp_path / "s.mp4"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=duration=2", str(src)], check=True)
+    wav = extract_audio(src, tmp_path / "a.wav")
+    seen = {}
+
+    class FakeModel:
+        def transcribe(self, audio, **kw):
+            seen["audio"] = audio
+            word = SimpleNamespace(start=0.1, end=0.4, word=" hi")
+            return [SimpleNamespace(start=0.0, end=1.0, text=" hi", words=[word])], None
+
+    t = Transcriber()
+    t._model = FakeModel()
+    segs = t.transcribe(wav, words=True)
+    assert isinstance(seen["audio"], np.ndarray) and seen["audio"].dtype == np.float32
+    assert abs(len(seen["audio"]) - 32000) < 800  # 2 s at 16 kHz
+    assert segs[0].words[0].text == "hi"
+
+
+def test_failed_job_keeps_download_for_retry(tmp_path, monkeypatch):
+    import dataclasses
+
+    from clipfarm.config import load_config
+    from clipfarm.pipeline import run
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    cfg = load_config(env_file=str(tmp_path / "none.env"))
+
+    def boom(url, job_id, cfg, workdir, *a):
+        (workdir / "source.mp4").write_bytes(b"8 GB of stream")
+        raise RuntimeError("whisper broke")
+
+    monkeypatch.setattr(run, "_process", boom)
+    with pytest.raises(RuntimeError):
+        run.process("https://twitch.tv/videos/1", 1, cfg, transcriber=None)
+    kept = run.work_dir_for(cfg, "https://twitch.tv/videos/1") / "source.mp4"
+    assert kept.exists()  # a retry of the same link (any job id) finds it
+
+    monkeypatch.setattr(run, "_process", lambda *a: ["ok"])
+    assert run.process("https://twitch.tv/videos/1", 2, cfg, transcriber=None) == ["ok"]
+    assert not kept.parent.exists()  # cleaned after success

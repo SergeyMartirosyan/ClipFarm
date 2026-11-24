@@ -154,7 +154,7 @@ class Worker:
 
     def cleanup(self) -> None:
         self.last_cleanup = time.time()
-        removed = cleanup_local(self.cfg.clips_dir, self.cfg.local_retention_days)
+        removed = cleanup_local(self.cfg.clips_dir, self.cfg.local_retention_days, self.cfg.work_dir)
         log.info("Local cleanup: removed %d old job folders", removed)
         if self.cfg.r2_enabled:
             try:

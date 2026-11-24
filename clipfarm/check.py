@@ -2,6 +2,7 @@
 
     python -m clipfarm.check                 # everything
     python -m clipfarm.check --no-telegram   # skip Telegram (while it is rate-limiting the bot)
+    python -m clipfarm.check --deep          # also run Whisper for real on a 3 s test sound (~30 s)
 
 Each line is OK / WARN (works, but a feature is off) / FAIL (fix before starting).
 What it sends: Telegram getMe; Gemini: list models + one tiny prompt (free tier); Claude: a model
@@ -64,6 +65,30 @@ LOCKED_OUT_ADVICE = (
     "this check once. If it persists: ask @SpamBot whether your account is limited, report it to "
     "@BotSupport, or create the bot from another Telegram account."
 )
+
+
+def check_whisper_runs(cfg) -> None:
+    """Load the real model and transcribe a generated 3 s sound: catches library mismatches in
+    seconds instead of hours into a job."""
+    import tempfile
+
+    from .media import extract_audio
+    from .pipeline.transcribe import Transcriber
+
+    started = time.time()
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "tone.mp4"
+            subprocess.run(
+                ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=black:s=320x240:d=3",
+                 "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-shortest", str(src)],
+                check=True,
+            )
+            wav = extract_audio(src, Path(tmp) / "tone.wav")
+            Transcriber(cfg.whisper_model, cfg.whisper_compute_type, cfg.whisper_threads).transcribe(wav, words=True)
+        report("OK", "Whisper runs", f"{cfg.whisper_model} transcribed a test sound in {time.time() - started:.0f}s")
+    except Exception as exc:
+        report("FAIL", "Whisper runs", f"{exc.__class__.__name__}: {str(exc)[:200]}")
 
 
 def check_telegram(cfg) -> None:
@@ -198,6 +223,7 @@ def check_youtube_cookies(cfg) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(prog="clipfarm.check")
     parser.add_argument("--no-telegram", action="store_true", help="skip the Telegram check")
+    parser.add_argument("--deep", action="store_true", help="also run Whisper for real on a test sound")
     args = parser.parse_args()
     env = Path.cwd() / ".env"
     if not env.exists():
@@ -206,6 +232,8 @@ def main() -> None:
     print(f"ClipFarm self-check (settings: {env if env.exists() else 'environment'}, data in {cfg.data_dir})\n")
     check_tools()
     check_models(cfg)
+    if args.deep:
+        check_whisper_runs(cfg)
     if args.no_telegram:
         report("WARN", "Telegram", "skipped (--no-telegram)")
     else:

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import dataclasses
 import logging
 
@@ -54,12 +55,13 @@ def cmd_process(args) -> None:
 
 def cmd_cleanup(_args) -> None:
     cfg = load_config()
-    print("local folders removed:", cleanup_local(cfg.clips_dir, cfg.local_retention_days))
+    print("local folders removed:", cleanup_local(cfg.clips_dir, cfg.local_retention_days, cfg.work_dir))
     if cfg.r2_enabled:
         print("R2 objects deleted:", R2(cfg).cleanup(cfg.r2_retention_days))
 
 
 def main() -> None:
+    sys.stdout.reconfigure(line_buffering=True)  # `> run.log` would otherwise buffer status lines
     setup_logging()
     parser = argparse.ArgumentParser(prog="clipfarm")
     sub = parser.add_subparsers(dest="cmd", required=True)

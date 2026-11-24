@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import wave
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import numpy as np
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +52,20 @@ def parse_json3(path: Path) -> list[Segment]:
     return segments
 
 
+def load_wav(path: Path) -> np.ndarray:
+    """16 kHz mono 16-bit WAV (what media.extract_audio writes) as float32 samples in -1..1.
+
+    Whisper gets the samples directly instead of a file path: faster-whisper's own file decoding
+    goes through PyAV, and some PyAV/faster-whisper version pairs are incompatible
+    (av 19: "open() got an unexpected keyword argument 'metadata_errors'")."""
+    with wave.open(str(path), "rb") as wf:
+        if (wf.getframerate(), wf.getnchannels(), wf.getsampwidth()) != (16000, 1, 2):
+            raise ValueError(f"{path} must be 16 kHz mono 16-bit WAV, got "
+                             f"{wf.getframerate()} Hz, {wf.getnchannels()} ch, {8 * wf.getsampwidth()} bit")
+        frames = wf.readframes(wf.getnframes())
+    return np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+
+
 class Transcriber:
     """Loads the Whisper model once per process, on first use."""
 
@@ -74,8 +91,9 @@ class Transcriber:
 
     def transcribe(self, audio_path: Path, words: bool = False) -> list[Segment]:
         language = "en" if self.model_name.endswith(".en") else None
+        audio = load_wav(audio_path) if Path(audio_path).suffix.lower() == ".wav" else str(audio_path)
         segments, _info = self.model.transcribe(
-            str(audio_path),
+            audio,
             language=language,
             beam_size=1 if not words else 5,
             vad_filter=True,
