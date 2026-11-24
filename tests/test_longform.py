@@ -143,3 +143,83 @@ def test_twitch_signals_are_shifted_into_the_section(monkeypatch):
         twitch.ViewerClip(20000, 30, 5, "after", "")])
     tw = run.fetch_twitch_signals(cfg, src, 7200, offset=5400)
     assert [(c.title, c.offset) for c in tw.clips] == [("in range", 100)]
+
+
+# --- section download straight from an HLS playlist -------------------------------------------------
+
+def _hls_server(tmp_path):
+    import functools
+    import http.server
+    import subprocess
+    import threading
+
+    d = tmp_path / "hls"
+    d.mkdir()
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=600",
+                    "-f", "lavfi", "-i", "sine=f=440:duration=600", "-c:v", "libx264", "-preset", "ultrafast",
+                    "-g", "60", "-c:a", "aac", "-f", "hls", "-hls_time", "10", "-hls_playlist_type", "vod",
+                    "-hls_segment_filename", str(d / "seg%04d.ts"), str(d / "index.m3u8")], check=True)
+    hits = []
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *a):
+            hits.append(self.path)
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Handler, directory=str(d)))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"http://127.0.0.1:{srv.server_address[1]}/index.m3u8", hits
+
+
+@pytest.mark.skipif(__import__("shutil").which("ffmpeg") is None, reason="ffmpeg missing")
+def test_hls_section_fetches_only_the_range(tmp_path):
+    from clipfarm.media import probe
+    from clipfarm.pipeline.download import hls_section
+
+    srv, url, hits = _hls_server(tmp_path)
+    try:
+        out = hls_section(url, {"User-Agent": "x"}, (300, 360), tmp_path / "source.mp4")
+    finally:
+        srv.shutdown()
+    info = probe(out)
+    assert 59 <= info.duration <= 61 and info.has_audio and info.width == 320
+    segments = [h for h in hits if h.endswith(".ts")]
+    assert len(segments) <= 10  # 6 segments in range + the first one ffmpeg probes, not all 60
+
+
+def test_section_download_retries_a_file_without_video(tmp_path, monkeypatch):
+    from clipfarm.pipeline import download
+
+    class FakeYDL:
+        def __init__(self, opts):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download=False):
+            return {"url": "https://usher.example/vod.m3u8", "protocol": "m3u8_native", "http_headers": {}}
+
+    calls = []
+
+    def fake_hls(playlist, headers, section, out):
+        calls.append(section)
+        out.write_bytes(b"broken" if len(calls) == 1 else b"good")
+        return out
+
+    def fake_probe(path):
+        if path.read_bytes() == b"broken":
+            raise RuntimeError("No video stream")
+        return SimpleNamespace(width=1920, height=1080, duration=60, has_audio=True)
+
+    monkeypatch.setattr(download, "YoutubeDL", FakeYDL)
+    monkeypatch.setattr(download, "hls_section", fake_hls)
+    monkeypatch.setattr("clipfarm.media.probe", fake_probe)
+    info, path = download._download_section("https://www.twitch.tv/videos/1", tmp_path, "", (7200, 7260))
+    assert calls == [(7200, 7260), (7200, 7260)] and path.read_bytes() == b"good"
+    assert (tmp_path / "source.done").exists()
+    # A re-run reuses the finished section without downloading again.
+    download._download_section("https://www.twitch.tv/videos/1", tmp_path, "", (7200, 7260))
+    assert len(calls) == 2

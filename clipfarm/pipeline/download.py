@@ -54,28 +54,25 @@ def probe_info(url: str, cookies: str = "") -> dict[str, Any]:
 
 
 def download(url: str, workdir: Path, cookies: str = "", section: tuple[float, float] | None = None) -> Source:
-    """`section` = (start, end) seconds: download only that part (the file then starts at `start`,
-    give or take a keyframe, i.e. ~2 s on Twitch)."""
+    """Download the video (or only `section` = (start, end) seconds of it) to workdir/source.mp4."""
     workdir.mkdir(parents=True, exist_ok=True)
-    opts = _base_opts(cookies) | {
-        "format": FORMAT,
-        "merge_output_format": "mp4",
-        "outtmpl": str(workdir / "source.%(ext)s"),
-    }
     if section is not None:
-        from yt_dlp.utils import download_range_func
-
-        opts["download_ranges"] = download_range_func(None, [(float(section[0]), float(section[1]))])
-        opts["force_keyframes_at_cuts"] = False  # re-encoding hours of video would take hours
-    with YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        video_path = Path(ydl.prepare_filename(info)).with_suffix(".mp4")
-    if not video_path.exists():
-        candidates = sorted(workdir.glob("source.*"))
-        candidates = [p for p in candidates if p.suffix in {".mp4", ".mkv", ".webm"}]
-        if not candidates:
-            raise RuntimeError("yt-dlp finished but no video file was written")
-        video_path = candidates[0]
+        info, video_path = _download_section(url, workdir, cookies, section)
+    else:
+        opts = _base_opts(cookies) | {
+            "format": FORMAT,
+            "merge_output_format": "mp4",
+            "outtmpl": str(workdir / "source.%(ext)s"),
+        }
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            video_path = Path(ydl.prepare_filename(info)).with_suffix(".mp4")
+        if not video_path.exists():
+            candidates = sorted(workdir.glob("source.*"))
+            candidates = [p for p in candidates if p.suffix in {".mp4", ".mkv", ".webm"}]
+            if not candidates:
+                raise RuntimeError("yt-dlp finished but no video file was written")
+            video_path = candidates[0]
 
     source = Source(
         url=url,
@@ -91,6 +88,78 @@ def download(url: str, workdir: Path, cookies: str = "", section: tuple[float, f
     )
     source.subtitles_path = _download_subtitles(url, workdir, cookies, info)
     return source
+
+
+def _download_section(url: str, workdir: Path, cookies: str, section: tuple[float, float]) -> tuple[dict, Path]:
+    """Only [start, end] of the video. HLS streams (Twitch) go straight to ffmpeg with an input
+    seek, which jumps to the right 10-second segment; yt-dlp's own range download would read the
+    whole stream from the beginning first (hours for a late part). Checked for a video track and
+    retried once; a finished section is reused on a re-run."""
+    with YoutubeDL(_base_opts(cookies) | {"format": FORMAT}) as ydl:
+        info = ydl.extract_info(url, download=False)
+    out = workdir / "source.mp4"
+    done = workdir / "source.done"
+    if done.exists() and out.exists():
+        return info, out
+    done.unlink(missing_ok=True)
+    last_error = None
+    for attempt in range(2):
+        try:
+            if info.get("url") and str(info.get("protocol", "")).startswith("m3u8"):
+                hls_section(info["url"], info.get("http_headers") or {}, section, out)
+            else:  # e.g. separate video + audio (YouTube): yt-dlp cuts it with HTTP range requests
+                _ytdlp_section(url, workdir, cookies, section, out)
+            from ..media import probe
+
+            probe(out)  # raises if there is no video track
+            done.touch()
+            return info, out
+        except Exception as exc:  # broken or empty section: try once more from scratch
+            last_error = exc
+            log.warning("Section download attempt %d failed: %s", attempt + 1, exc)
+            out.unlink(missing_ok=True)
+    raise RuntimeError(f"Couldn't download {section[0]:.0f}-{section[1]:.0f}s of the video: {last_error}")
+
+
+def hls_section(playlist: str, headers: dict, section: tuple[float, float], out: Path) -> Path:
+    import subprocess
+
+    start, end = section
+    tmp = out.with_name(out.stem + ".part.mp4")
+    cmd = ["ffmpeg", "-y", "-v", "error"]
+    if playlist.startswith("http"):
+        cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "30"]
+    if headers:
+        cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
+    cmd += [
+        "-ss", f"{start:.3f}", "-i", playlist, "-t", f"{end - start:.3f}",
+        "-map", "0:v:0?", "-map", "0:a:0?", "-c", "copy", "-bsf:a", "aac_adtstoasc",
+        "-movflags", "+faststart", str(tmp),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=6 * 3600)
+    if proc.returncode != 0:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError("ffmpeg: " + " ".join(proc.stderr.strip().splitlines()[-3:]))
+    tmp.replace(out)
+    return out
+
+
+def _ytdlp_section(url: str, workdir: Path, cookies: str, section: tuple[float, float], out: Path) -> None:
+    from yt_dlp.utils import download_range_func
+
+    opts = _base_opts(cookies) | {
+        "format": FORMAT,
+        "merge_output_format": "mp4",
+        "outtmpl": str(workdir / "section.%(ext)s"),
+        "download_ranges": download_range_func(None, [(float(section[0]), float(section[1]))]),
+        "force_keyframes_at_cuts": False,
+    }
+    with YoutubeDL(opts) as ydl:
+        ydl.download([url])
+    found = [p for p in sorted(workdir.glob("section.*")) if p.suffix in {".mp4", ".mkv", ".webm"}]
+    if not found:
+        raise RuntimeError("yt-dlp wrote no file for the section")
+    found[0].replace(out)
 
 
 def _download_subtitles(url: str, workdir: Path, cookies: str, info: dict[str, Any]) -> Path | None:
