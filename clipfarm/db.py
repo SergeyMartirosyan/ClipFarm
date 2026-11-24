@@ -160,14 +160,6 @@ class Database:
             )
             return int(cur.lastrowid)
 
-    def waiting_jobs_of(self, user_id: int) -> int:
-        """Links this person has queued or in progress (for the per-person limit)."""
-        with self.connect() as con:
-            row = con.execute(
-                "SELECT COUNT(*) FROM jobs WHERE user_id = ? AND status NOT IN ('done', 'failed')", (user_id,)
-            ).fetchone()
-            return int(row[0])
-
     def claim_next_job(self) -> sqlite3.Row | None:
         """Atomically move the oldest queued job to 'downloading' and return it."""
         with self.connect() as con:

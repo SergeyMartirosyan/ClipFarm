@@ -27,6 +27,11 @@ URL_RE = re.compile(r"https?://[^\s<>\"']+")
 AWAITING_TITLE = "awaiting_title:"  # + user id -> "clip_id:prompt_message_id"
 
 
+def in_home_chat(cfg, chat_id: int | None) -> bool:
+    """With TELEGRAM_CHAT_ID set, the bot only works in that group; otherwise anywhere (setup)."""
+    return not cfg.telegram_chat_id or chat_id == cfg.telegram_chat_id
+
+
 def report_chat(cfg, chat_id: int) -> int:
     """Where a job's status, clips and posting reports go: the shared group if one is set."""
     return int(cfg.telegram_chat_id or chat_id)
@@ -129,6 +134,8 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     text = msg.text or ""
     urls = URL_RE.findall(text)
     is_group = msg.chat.type in ("group", "supergroup")
+    if not in_home_chat(cfg, msg.chat_id):
+        return  # group-only mode: private messages (and other groups) are ignored
 
     key = AWAITING_TITLE + str(user.id)
     clip_id = title_reply_target(db.kv_get(key), is_group,
@@ -161,10 +168,6 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     for url in urls:
-        if user.id != cfg.telegram_owner_id and db.waiting_jobs_of(user.id) >= cfg.max_queued_per_user:
-            await msg.reply_text(f"You already have {cfg.max_queued_per_user} links waiting. "
-                                 "Send this one again when one of them is done.")
-            return
         chat = report_chat(cfg, msg.chat_id)
         # 'new' until the status message exists, so the worker can't claim the job and post a
         # second status message while Telegram is slow to answer this reply.
@@ -195,6 +198,9 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     cfg = ctx.bot_data["cfg"]
     if q.from_user is None or q.from_user.id not in cfg.allowed_user_ids:
         await q.answer("Not allowed.", show_alert=True)
+        return
+    if not in_home_chat(cfg, q.message.chat.id if q.message and q.message.chat else None):
+        await q.answer("Use the buttons in the group.", show_alert=True)
         return
     db = _db(ctx)
     try:
@@ -303,9 +309,11 @@ def main() -> None:
     app.bot_data["cfg"] = cfg
     app.bot_data["db"] = dbm.Database(cfg.db_path)
 
-    owner = filters.User(user_id=sorted(cfg.allowed_user_ids))  # owner + TELEGRAM_ALLOWED_USERS
+    users = filters.User(user_id=sorted(cfg.allowed_user_ids))  # owner + TELEGRAM_ALLOWED_USERS
+    # Group-only mode: everything except /chatid works in the configured group only.
+    owner = users & (filters.Chat(chat_id=cfg.telegram_chat_id) if cfg.telegram_chat_id else filters.ALL)
     app.add_handler(CommandHandler(["start", "help"], cmd_start, filters=owner))
-    app.add_handler(CommandHandler("chatid", cmd_chatid, filters=owner))
+    app.add_handler(CommandHandler("chatid", cmd_chatid, filters=users))
     app.add_handler(CommandHandler("queue", cmd_queue, filters=owner))
     app.add_handler(CommandHandler("stats", cmd_stats, filters=owner))
     app.add_handler(CommandHandler("schedule", cmd_schedule, filters=owner))
@@ -315,7 +323,7 @@ def main() -> None:
     username = wait_for_telegram(cfg)
     log.info("Bot @%s started; users allowed: %s; reports to %s", username,
              ", ".join(str(u) for u in sorted(cfg.allowed_user_ids)),
-             f"group {cfg.telegram_chat_id}" if cfg.telegram_chat_id else "each person's own chat")
+             f"group {cfg.telegram_chat_id} only" if cfg.telegram_chat_id else "private chats (no group set)")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

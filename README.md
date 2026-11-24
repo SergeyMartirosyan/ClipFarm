@@ -118,12 +118,11 @@ account and today's quota.
 ## Friends and a group chat
 
 - `TELEGRAM_ALLOWED_USERS=222,333`: friends' numeric ids (from @userinfobot) who may send links and
-  use the buttons. Everyone else is ignored. The owner (`TELEGRAM_OWNER_ID`) always has access and
-  no queue limit; others may have `MAX_QUEUED_PER_USER` links waiting at once.
-- `TELEGRAM_CHAT_ID=-100…`: a group where all status messages, clips and posting reports go, even for
-  links sent privately to the bot. Add the bot to the group, **make it an admin** (no rights needed;
-  admins see all messages, so pasted links work), send `/chatid` there, put the id in `.env` and
-  restart the bot and worker.
+  use the buttons. Everyone else is ignored. The owner (`TELEGRAM_OWNER_ID`) always has access.
+- `TELEGRAM_CHAT_ID=-100…`: the group the bot works in. Once set, it **only** reacts there (private
+  messages and other groups are ignored) and all status messages, clips and posting reports go there.
+  Add the bot to the group, **make it an admin** (no rights needed; admins see all messages, so pasted
+  links work), send `/chatid` there, put the id in `.env` and restart the bot and worker.
 - In the group, just paste a link. Clips show who approved or skipped them. To rename, tap ✏️ and
   *reply* to the bot's question; normal chat never renames anything.
 - Approved clips post to the **owner's** connected accounts.

@@ -18,7 +18,7 @@ def run(coro):
 
 def _cfg(**over):
     base = dict(telegram_owner_id=OWNER, telegram_allowed_users=(FRIEND,), telegram_chat_id=0,
-                max_queued_per_user=2, post_tz="Asia/Yerevan", post_platforms=[], posts_per_day=15,
+                post_tz="Asia/Yerevan", post_platforms=[], posts_per_day=15,
                 post_window="10:00-23:00")
     base.update(over)
     cfg = SimpleNamespace(**base)
@@ -107,24 +107,27 @@ def test_friend_posts_link_in_group(tmp_path):
     assert "from Friend" in replies[0]
 
 
-def test_private_link_reports_to_the_group(tmp_path):
+def test_group_only_mode_ignores_private_messages(tmp_path):
     ctx = _ctx(tmp_path, _cfg(telegram_chat_id=GROUP))
     update, replies = _message(OWNER, OWNER, "https://www.twitch.tv/videos/2", "private", first_name="Sergey")
     run(bot.on_text(update, ctx))
-    assert ctx.bot.sent and ctx.bot.sent[0][0] == GROUP and "from Sergey" in ctx.bot.sent[0][1]
-    assert replies == ["Queued as job #1. Updates and clips go to the group."]
-    assert ctx.bot_data["db"].get_job(1)["chat_id"] == GROUP
+    assert replies == [] and ctx.bot.sent == [] and ctx.bot_data["db"].recent_jobs(5) == []
+    other_group, replies = _message(FRIEND, -100777, "https://www.twitch.tv/videos/3", "group")
+    run(bot.on_text(other_group, ctx))
+    assert replies == [] and ctx.bot_data["db"].recent_jobs(5) == []
 
 
-def test_per_person_limit_but_not_for_the_owner(tmp_path):
+def test_without_group_private_chat_works(tmp_path):
+    ctx = _ctx(tmp_path, _cfg())
+    update, replies = _message(OWNER, OWNER, "https://www.twitch.tv/videos/2", "private", first_name="Sergey")
+    run(bot.on_text(update, ctx))
+    assert "from Sergey" in replies[0] and ctx.bot_data["db"].get_job(1)["chat_id"] == OWNER
+
+
+def test_no_per_person_limit(tmp_path):
     ctx = _ctx(tmp_path, _cfg(telegram_chat_id=GROUP))
-    for i in range(3):
+    for i in range(5):
         update, replies = _message(FRIEND, GROUP, f"https://twitch.tv/videos/{i}", "group")
-        run(bot.on_text(update, ctx))
-    assert "already have 2 links waiting" in replies[-1]
-    assert len(ctx.bot_data["db"].recent_jobs(10)) == 2
-    for i in range(3):
-        update, _ = _message(OWNER, GROUP, f"https://twitch.tv/videos/o{i}", "group")
         run(bot.on_text(update, ctx))
     assert len(ctx.bot_data["db"].recent_jobs(10)) == 5
 
@@ -145,7 +148,7 @@ def _clip(db, chat=GROUP):
     return cid
 
 
-def _press(user_id, data, first_name="Friend"):
+def _press(user_id, data, first_name="Friend", chat=GROUP):
     answers, edits, prompts = [], [], []
 
     async def answer(text=None, **kw):
@@ -161,7 +164,7 @@ def _press(user_id, data, first_name="Friend"):
     user = SimpleNamespace(id=user_id, first_name=first_name, username=None,
                            mention_html=lambda: f"<a>{first_name}</a>")
     q = SimpleNamespace(from_user=user, data=data, answer=answer, edit_message_caption=edit_message_caption,
-                        message=SimpleNamespace(video=True, reply_text=reply_text))
+                        message=SimpleNamespace(video=True, reply_text=reply_text, chat=SimpleNamespace(id=chat)))
     return SimpleNamespace(callback_query=q), answers, edits, prompts
 
 
@@ -208,3 +211,12 @@ def test_edit_title_in_group_needs_a_reply(tmp_path):
     run(bot.on_text(reply, ctx))
     assert db.get_clip(cid)["title"] == "Speed crashes the getaway car"
     assert ctx.bot.edits[0]["chat_id"] == GROUP and replies[0].startswith("✏️ Title updated")
+
+
+def test_buttons_outside_the_group_are_refused(tmp_path):
+    ctx = _ctx(tmp_path, _cfg(telegram_chat_id=GROUP))
+    db = ctx.bot_data["db"]
+    cid = _clip(db)
+    update, answers, _, _ = _press(OWNER, f"ok:{cid}", "Sergey", chat=OWNER)
+    run(bot.on_button(update, ctx))
+    assert answers == ["Use the buttons in the group."] and db.get_clip(cid)["status"] == dbm.PENDING_REVIEW

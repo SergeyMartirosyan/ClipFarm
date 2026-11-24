@@ -45,7 +45,6 @@ class Config:
     telegram_api_base: str
     telegram_allowed_users: tuple[int, ...]
     telegram_chat_id: int
-    max_queued_per_user: int
 
     # Paths
     data_dir: Path
@@ -146,7 +145,6 @@ def load_config(env_file: str | None = None) -> Config:
         telegram_api_base=_str("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/"),
         telegram_allowed_users=_int_list("TELEGRAM_ALLOWED_USERS"),
         telegram_chat_id=_int("TELEGRAM_CHAT_ID", 0),
-        max_queued_per_user=_int("MAX_QUEUED_PER_USER", 2),
         data_dir=data_dir,
         local_retention_days=_int("LOCAL_RETENTION_DAYS", 10),
         gemini_api_key=_str("GEMINI_API_KEY"),
