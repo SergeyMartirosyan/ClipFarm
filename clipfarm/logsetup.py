@@ -26,7 +26,7 @@ class RedactFilter(logging.Filter):
 def setup_logging(level: int = logging.INFO) -> None:
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     # httpx logs every request URL at INFO, and Telegram URLs contain the bot token.
-    for noisy in ("httpx", "httpcore", "telegram.ext", "google_genai", "urllib3", "botocore"):
+    for noisy in ("httpx", "httpx2", "httpcore", "httpcore2", "telegram.ext", "google_genai", "urllib3", "botocore", "huggingface_hub"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     # Belt and braces: scrub anything token-like that still reaches a handler.
     for handler in logging.getLogger().handlers:
