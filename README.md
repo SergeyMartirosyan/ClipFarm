@@ -158,6 +158,10 @@ clipfarm/
 ├── notify.py        tiny sync Telegram client for the worker
 ├── media.py         ffmpeg/ffprobe helpers, scene cuts
 ├── storage.py       R2 upload + retention, local cleanup
+├── poster.py        publishes approved clips at their slots
+├── publish/
+│   ├── schedule.py    posting slots
+│   └── instagram.py   Instagram Reels client
 └── pipeline/
     ├── run.py         orchestrates one link end to end
     ├── download.py    yt-dlp: video, heatmap, English subtitles
