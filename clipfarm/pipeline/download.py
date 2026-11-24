@@ -53,13 +53,20 @@ def probe_info(url: str, cookies: str = "") -> dict[str, Any]:
         return ydl.extract_info(url, download=False)
 
 
-def download(url: str, workdir: Path, cookies: str = "") -> Source:
+def download(url: str, workdir: Path, cookies: str = "", section: tuple[float, float] | None = None) -> Source:
+    """`section` = (start, end) seconds: download only that part (the file then starts at `start`,
+    give or take a keyframe, i.e. ~2 s on Twitch)."""
     workdir.mkdir(parents=True, exist_ok=True)
     opts = _base_opts(cookies) | {
         "format": FORMAT,
         "merge_output_format": "mp4",
         "outtmpl": str(workdir / "source.%(ext)s"),
     }
+    if section is not None:
+        from yt_dlp.utils import download_range_func
+
+        opts["download_ranges"] = download_range_func(None, [(float(section[0]), float(section[1]))])
+        opts["force_keyframes_at_cuts"] = False  # re-encoding hours of video would take hours
     with YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
         video_path = Path(ydl.prepare_filename(info)).with_suffix(".mp4")

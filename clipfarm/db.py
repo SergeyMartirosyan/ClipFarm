@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     attempts          INTEGER NOT NULL DEFAULT 0,
     user_id           INTEGER,
     user_name         TEXT NOT NULL DEFAULT '',
+    range_start       REAL,
+    range_end         REAL,
+    part_label        TEXT NOT NULL DEFAULT '',
     created_at        REAL NOT NULL,
     updated_at        REAL NOT NULL
 );
@@ -141,6 +144,9 @@ class Database:
                 con.execute("ALTER TABLE jobs ADD COLUMN user_id INTEGER")
             if "user_name" not in job_cols:
                 con.execute("ALTER TABLE jobs ADD COLUMN user_name TEXT NOT NULL DEFAULT ''")
+            for col, decl in (("range_start", "REAL"), ("range_end", "REAL"), ("part_label", "TEXT NOT NULL DEFAULT ''")):
+                if col not in job_cols:
+                    con.execute(f"ALTER TABLE jobs ADD COLUMN {col} {decl}")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -158,13 +164,14 @@ class Database:
     # ---- jobs ---------------------------------------------------------------
 
     def add_job(self, url: str, chat_id: int | None = None, status: str = QUEUED,
-                user_id: int | None = None, user_name: str = "") -> int:
+                user_id: int | None = None, user_name: str = "",
+                range_start: float | None = None, range_end: float | None = None, part_label: str = "") -> int:
         now = time.time()
         with self.connect() as con:
             cur = con.execute(
-                "INSERT INTO jobs (url, chat_id, status, user_id, user_name, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (url, chat_id, status, user_id, user_name, now, now),
+                "INSERT INTO jobs (url, chat_id, status, user_id, user_name, range_start, range_end, part_label, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (url, chat_id, status, user_id, user_name, range_start, range_end, part_label, now, now),
             )
             return int(cur.lastrowid)
 

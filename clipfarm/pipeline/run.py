@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import logging
 import shutil
@@ -31,6 +32,7 @@ class RenderedClip:
     preview_path: Path
     r2_key: str | None
     public_url: str | None
+    offset: float = 0.0  # where the processed section starts in the full video (clip times are relative)
 
 
 class PipelineError(RuntimeError):
@@ -44,7 +46,7 @@ class TwitchSignals:
     notes: list[str]  # what worked / what didn't, shown in the job status
 
 
-def fetch_twitch_signals(cfg, source: download.Source, duration: float) -> TwitchSignals | None:
+def fetch_twitch_signals(cfg, source: download.Source, duration: float, offset: float = 0.0) -> TwitchSignals | None:
     """Viewer clips + chat replay for a Twitch VOD. Each part fails independently:
     a missing signal makes picks weaker, never fails the job."""
     vid = twitch.vod_id(source.url, source.video_id, source.extractor)
@@ -67,9 +69,13 @@ def fetch_twitch_signals(cfg, source: download.Source, duration: float) -> Twitc
             out.notes.append("viewer clips failed (public route)")
     else:
         out.notes.append("viewer clips off (channel unknown)")
+    if offset or out.clips:
+        # Viewer clips of the whole VOD: keep those in this section, in file time.
+        out.clips = [dataclasses.replace(c, offset=c.offset - offset) for c in out.clips
+                     if offset - c.duration < c.offset < offset + duration]
     if cfg.twitch_chat:
         try:
-            out.chat = twitch.ChatReplay().fetch(vid, duration)
+            out.chat = twitch.ChatReplay().fetch(vid, duration, start=offset)
             cov = "" if out.chat.coverage >= 0.995 else f" ({100 * out.chat.coverage:.0f}% of the VOD)"
             out.notes.append(f"{out.chat.total} chat messages{cov}")
         except Exception as exc:
@@ -132,8 +138,9 @@ def process(
     on_source: Callable[[download.Source], None] = lambda src: None,
     keep_workdir: bool = False,
     attempt: int = 1,
+    section: tuple[float, float] | None = None,
 ) -> list[RenderedClip]:
-    workdir = work_dir_for(cfg, url)
+    workdir = work_dir_for(cfg, url if section is None else f"{url}#{int(section[0])}-{int(section[1])}")
     # A re-run (after a worker restart) gets its own folder: earlier clips may already be approved.
     outdir = cfg.clips_dir / f"job-{job_id}" / f"try-{attempt}"
     if cfg.keep_last_source:
@@ -141,7 +148,7 @@ def process(
     workdir.mkdir(parents=True, exist_ok=True)
     outdir.mkdir(parents=True, exist_ok=True)
     try:
-        result = _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_clip, on_source)
+        result = _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_clip, on_source, section)
     except BaseException:
         # Keep the (possibly multi-GB) download: sending the same link again skips re-downloading.
         # Old leftovers are removed by the regular cleanup.
@@ -169,17 +176,32 @@ def work_dir_for(cfg, url: str) -> Path:
     return cfg.work_dir / ("src-" + hashlib.sha1(url.strip().encode()).hexdigest()[:12])
 
 
-def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_clip, on_source):
+def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_clip, on_source, section=None):
     # 1. Download -------------------------------------------------------------
-    on_status("downloading", "")
+    from ..longform import hms
+
+    on_status("downloading", f"{hms(section[0])}–{hms(section[1])}" if section else "")
     meta = download.probe_info(url, cfg.ytdlp_cookies)
     if meta.get("is_live"):
         raise PipelineError("That stream is still live. Send the link again once the VOD is available.")
-    if meta.get("duration") and meta["duration"] > cfg.max_source_hours * 3600:
+    full = float(meta.get("duration") or 0)
+    if section is not None and full:
+        section = (max(0.0, section[0]), min(full, section[1]))
+        if section[1] - section[0] < 60:
+            raise PipelineError(f"That time range is outside the video (it is {hms(full)} long).")
+    length = (section[1] - section[0]) if section else full
+    if length and length > cfg.max_source_hours * 3600:
         raise PipelineError(
-            f"Video is {meta['duration'] / 3600:.1f} h; the limit is {cfg.max_source_hours:g} h (MAX_SOURCE_HOURS)."
+            f"That's {length / 3600:.1f} h in one piece; the limit is {cfg.max_source_hours:g} h (MAX_SOURCE_HOURS)."
         )
-    source = download.download(url, workdir, cfg.ytdlp_cookies)
+    offset = section[0] if section else 0.0
+    source = download.download(url, workdir, cfg.ytdlp_cookies, section)
+    if offset:
+        # The file starts at `offset`: shift the video-wide replay heatmap into file time.
+        source.heatmap = [
+            {**seg, "start_time": seg.get("start_time", 0) - offset, "end_time": seg.get("end_time", 0) - offset}
+            for seg in source.heatmap if seg.get("end_time", 0) > offset
+        ]
     vinfo = probe(source.video_path)
     duration = vinfo.duration or source.duration
     source.duration = duration
@@ -196,7 +218,7 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
 
     # Twitch chat/clips download over the network while Whisper uses the CPU.
     with ThreadPoolExecutor(1) as pool:
-        tw_future = pool.submit(fetch_twitch_signals, cfg, source, duration)
+        tw_future = pool.submit(fetch_twitch_signals, cfg, source, duration, offset)
 
         # 2. Transcript ---------------------------------------------------------
         cached = workdir / "transcript.json"
@@ -347,7 +369,8 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
                 url_ = r2.upload(final, key, "video/mp4")
                 r2.upload_json(
                     {
-                        "source_url": url, "source_title": source.title, "start": c.start, "end": c.end,
+                        "source_url": url, "source_title": source.title,
+                        "start": c.start + offset, "end": c.end + offset,
                         "title": c.title, "hashtags": c.hashtags, "reason": c.reason,
                         "llm_score": c.llm_score, "signal_score": c.signal_score, "judge_model": c.model,
                     },
@@ -359,7 +382,7 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
 
         clip = RenderedClip(
             idx=i, total=len(chosen), candidate=c, layout=lay.kind,
-            final_path=final, preview_path=preview, r2_key=key, public_url=url_,
+            final_path=final, preview_path=preview, r2_key=key, public_url=url_, offset=offset,
         )
         rendered.append(clip)
         on_clip(clip)

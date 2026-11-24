@@ -103,10 +103,99 @@ class Worker:
 
     # -- job ------------------------------------------------------------------------
 
+    # -- long streams ---------------------------------------------------------------------------
+
+    def plan(self, job) -> tuple[list[tuple[float, float]] | None, str]:
+        """None = process this job as is. Otherwise the parts to queue instead (empty = can't plan),
+        plus a sentence for the status message."""
+        from . import longform
+        from .pipeline import download
+
+        part = self.cfg.part_hours * 3600
+        if job["range_start"] is not None and job["range_end"] is not None:
+            a, b = float(job["range_start"]), float(job["range_end"])
+            if b - a <= part * 1.25:
+                return None, ""
+            parts = longform.split_ranges(a, b, part)
+            return parts, f"That range is {(b - a) / 3600:.1f} h: processing it in {len(parts)} parts"
+        try:
+            meta = download.probe_info(job["url"], self.cfg.ytdlp_cookies)
+        except Exception:
+            return None, ""  # let the normal run report the problem
+        duration = float(meta.get("duration") or 0)
+        if not duration or duration <= part * 1.25 or meta.get("is_live"):
+            return None, ""
+        hours = duration / 3600
+        if duration <= self.cfg.scout_above_hours * 3600:
+            parts = longform.split_ranges(0, duration, part)
+            return parts, f"Long stream ({hours:.1f} h): processing it in {len(parts)} parts of ~{self.cfg.part_hours:g} h"
+        self.db.update_job(job["id"], status="analyzing")
+        self._show_status(job["id"], f"{hours:.0f} h stream: scouting chat and viewer clips for the best parts")
+        parts = self.scout(job, meta, duration)
+        if not parts:
+            return [], (f"This stream is {hours:.0f} h: too long to process whole, and there was no chat or "
+                        "viewer data to find the best part. Send the link again with a time range, e.g. "
+                        f"{job['url']} 3:00:00-5:00:00")
+        return parts, f"{hours:.0f} h stream: the {len(parts)} hottest parts by chat and viewer clips"
+
+    def scout(self, job, meta: dict, duration: float) -> list[tuple[float, float]]:
+        """The hottest windows of a very long VOD, chosen without downloading any video."""
+        import numpy as np
+
+        from . import longform
+        from .pipeline import twitch
+
+        minutes = int(duration // 60) + 1
+        chat_rate, clip_offsets = None, []
+        vid = twitch.vod_id(job["url"], str(meta.get("id") or ""), (meta.get("extractor_key") or "").lower())
+        if vid:
+            if self.cfg.twitch_chat:
+                try:
+                    chat_rate = twitch.ChatReplay(workers=6).sample_rates(vid, duration)
+                except Exception as exc:
+                    log.warning("Scouting chat failed: %s", exc)
+            try:
+                if self.cfg.twitch_client_id and self.cfg.twitch_client_secret:
+                    clips = twitch.Helix(self.cfg.twitch_client_id, self.cfg.twitch_client_secret).vod_clips(vid)
+                else:
+                    clips = twitch.public_vod_clips(str(meta.get("uploader_id") or ""), vid,
+                                                    float(meta.get("timestamp") or 0))
+                clip_offsets = [(c.offset, c.views) for c in clips]
+            except Exception as exc:
+                log.warning("Scouting viewer clips failed: %s", exc)
+        score = longform.activity_per_minute(minutes, chat_rate, clip_offsets, meta.get("heatmap"))
+        if float(np.max(score, initial=0)) <= 0:
+            return []
+        window = int(self.cfg.part_hours * 60)
+        return [(a * 60.0, min(duration, b * 60.0))
+                for a, b in longform.pick_hot_windows(score, window, max(1, self.cfg.scout_parts))]
+
+    def queue_parts(self, job, parts: list[tuple[float, float]], note: str) -> None:
+        from . import longform
+
+        n = len(parts)
+        ids = [
+            self.db.add_job(job["url"], job["chat_id"], status=dbm.QUEUED, user_id=job["user_id"],
+                            user_name=job["user_name"], range_start=a, range_end=b, part_label=f"part {i}/{n}")
+            for i, (a, b) in enumerate(parts, start=1)
+        ]
+        self.db.update_job(job["id"], status=dbm.DONE)
+        self._show_status(job["id"], extra=f"\n{note}: {longform.describe_parts(parts)}.\n"
+                                           f"Queued as jobs #{ids[0]}–#{ids[-1]}; clips arrive part by part.")
+
     def handle(self, job) -> None:
         job_id = job["id"]
         log.info("Job #%d: %s", job_id, job["url"])
         sent = 0
+        parts, note = self.plan(job)
+        if parts is not None:
+            if parts:
+                log.info("Job #%d split into %d parts", job_id, len(parts))
+                self.queue_parts(job, parts, note)
+            else:
+                self._fail(job_id, note)
+            return
+        section = (float(job["range_start"]), float(job["range_end"])) if job["range_start"] is not None else None
 
         def on_status(status: str, detail: str) -> None:
             log.info("Job #%d [%s] %s", job_id, status, detail)
@@ -121,7 +210,7 @@ class Worker:
             nonlocal sent
             c = rc.candidate
             clip_id = self.db.add_clip(
-                job_id=job_id, idx=rc.idx, total=rc.total, start=c.start, end=c.end,
+                job_id=job_id, idx=rc.idx, total=rc.total, start=c.start + rc.offset, end=c.end + rc.offset,
                 title=c.title, hashtags=" ".join(c.hashtags), reason=c.reason, vision_note=c.vision_note,
                 llm_score=c.llm_score, signal_score=c.signal_score, final_score=c.final_score,
                 judge_model=c.model, layout=rc.layout, local_path=str(rc.final_path),
@@ -137,7 +226,7 @@ class Worker:
                 job["url"], job_id, self.cfg,
                 transcriber=self.transcriber, db=self.db,
                 on_status=on_status, on_clip=on_clip, on_source=on_source,
-                attempt=int(job["attempts"] or 1),
+                attempt=int(job["attempts"] or 1), section=section,
             )
         except JudgeBudgetExceeded as exc:
             self._fail(job_id, f"{exc}. Gemini was unavailable; send the link again later.")

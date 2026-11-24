@@ -47,6 +47,10 @@ def job_text(job: Mapping[str, Any], detail: str = "", extra: str = "") -> str:
     who = _get(job, "user_name")
     if who:
         head += f" · from {who}"
+    part = _get(job, "part_label")
+    rs, re_ = _get(job, "range_start", None), _get(job, "range_end", None)
+    if rs is not None and re_ is not None:
+        head += f" · {part + ' · ' if part else ''}{hms(rs)}–{hms(re_)}"
     lines = [head]
     if job["source_title"]:
         lines.append(job["source_title"])
@@ -138,5 +142,7 @@ HELP = (
     "/stats: clip counts and this month's fallback spend\n"
     "/schedule: upcoming posts\n\n"
     "In a group, just paste the link. To change a title, tap ✏️ and reply to the bot's question.\n"
+    "Only part of a long stream: add a time range after the link, e.g. <link> 1:30:00-3:30:00.\n"
+    "Long streams are split into parts automatically; very long ones are scouted for their best hours.\n"
     "/chatid: show this chat's id (for TELEGRAM_CHAT_ID)"
 )

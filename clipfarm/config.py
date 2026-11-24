@@ -67,6 +67,9 @@ class Config:
     clip_min_seconds: int
     clip_max_seconds: int
     max_source_hours: float
+    part_hours: float
+    scout_above_hours: float
+    scout_parts: int
 
     vision_review: bool
     vision_candidates: int
@@ -159,6 +162,9 @@ def load_config(env_file: str | None = None) -> Config:
         clip_min_seconds=_int("CLIP_MIN_SECONDS", 15),
         clip_max_seconds=_int("CLIP_MAX_SECONDS", 35),
         max_source_hours=_float("MAX_SOURCE_HOURS", 6.0),
+        part_hours=_float("PART_HOURS", 2.0),
+        scout_above_hours=_float("SCOUT_ABOVE_HOURS", 12.0),
+        scout_parts=_int("SCOUT_PARTS", 2),
         vision_review=_str("VISION_REVIEW", "1").lower() not in {"0", "false", "no", "off"},
         vision_candidates=_int("VISION_CANDIDATES", 20),
         ytdlp_cookies=_str("YTDLP_COOKIES"),

@@ -146,6 +146,22 @@ account and today's quota.
   Cloudflare Worker. Create a Worker, paste `deploy/telegram-relay.js`, deploy, and set
   `TELEGRAM_API_BASE=https://<worker>.workers.dev` in `.env`.
 
+## Long streams
+
+A 2-hour 1080p60 VOD is ~7 GB (~15 GB of disk while downloading) and ~45 min of Whisper on two cores,
+so long streams are never processed in one piece:
+
+- **A time range in the message** processes only that part: `<link> 1:30:00-3:30:00`
+  (also `from 1h30m to 3h`, a single start time, or a Twitch `?t=1h30m` link: 2 hours from there).
+  Only that section is downloaded.
+- **Up to `SCOUT_ABOVE_HOURS` (12 h)**: split into `PART_HOURS` (2 h) parts with a 1-minute overlap,
+  queued one after another; clips arrive part by part.
+- **Longer**: scouted first, without downloading video: Twitch chat activity (one sample per minute),
+  viewer clips and YouTube's replay heatmap pick the `SCOUT_PARTS` hottest windows, and only those are
+  processed. With no such data the bot asks for a time range.
+
+Clip times shown in Telegram are always times in the full stream.
+
 ## Storage
 
 - `data/work/job-N/`: the source download and audio, deleted when the job ends.

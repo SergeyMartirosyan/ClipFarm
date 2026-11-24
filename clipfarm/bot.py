@@ -167,11 +167,19 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await msg.reply_text("Send me a video link (YouTube, Twitch VOD, Kick, …). /start for help.")
         return
 
-    for url in urls:
+    from . import longform
+
+    for n, url in enumerate(urls):
+        # Text between this link and the next may hold a time range: "<link> 1:30:00-3:30:00".
+        after = text.split(url, 1)[1]
+        if n + 1 < len(urls):
+            after = after.split(urls[n + 1], 1)[0]
+        rng = longform.parse_range(after, url, default_len=getattr(cfg, "part_hours", 2.0) * 3600)
         chat = report_chat(cfg, msg.chat_id)
         # 'new' until the status message exists, so the worker can't claim the job and post a
         # second status message while Telegram is slow to answer this reply.
-        job_id = db.add_job(url, chat, status=dbm.NEW, user_id=user.id, user_name=display_name(user))
+        job_id = db.add_job(url, chat, status=dbm.NEW, user_id=user.id, user_name=display_name(user),
+                            range_start=rng[0] if rng else None, range_end=rng[1] if rng else None)
         pos = db.queue_position(job_id)
         shown = dict(db.get_job(job_id)) | {"status": dbm.QUEUED}
         detail = "next up" if pos <= 1 else f"position {pos}"

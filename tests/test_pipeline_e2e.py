@@ -60,7 +60,7 @@ def test_full_pipeline(tmp_path, monkeypatch, source_video):
     db = dbm.Database(cfg.db_path)
     job_id = db.add_job("https://example.com/v")
 
-    def fake_download(url, workdir, cookies=""):
+    def fake_download(url, workdir, cookies="", section=None):
         workdir.mkdir(parents=True, exist_ok=True)
         dst = workdir / "source.mp4"
         shutil.copy(source_video, dst)

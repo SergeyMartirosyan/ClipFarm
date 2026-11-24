@@ -394,10 +394,36 @@ class ChatReplay:
                 offset += 1
         return msgs, end, ""
 
-    def fetch(self, vid: str, duration: float) -> ChatData:
+    def sample_rates(self, vid: str, duration: float, step: int = 60) -> np.ndarray:
+        """Chat messages per second, sampled once per `step` seconds over the whole VOD: one request
+        per sample instead of reading every message. Enough to find the busy hours of a 44 h stream
+        (~2,600 requests) before downloading any video. Index = minute (for step=60)."""
+        points = list(range(0, int(duration), step))
+
+        def one(t: int) -> float:
+            try:
+                page, _ = self._page(vid, t)
+            except TwitchError:
+                return 0.0
+            page = [m for m in page if m[0] >= t]
+            if not page:
+                return 0.0
+            span = max(1, max(o for o, _ in page) - t + 1)
+            return len(page) / span
+
+        with ThreadPoolExecutor(max(1, self.workers)) as pool:
+            return np.asarray(list(pool.map(one, points)), dtype=np.float32)
+
+    def fetch(self, vid: str, duration: float, start: float = 0.0) -> ChatData:
+        """Chat of [start, start + duration] of the VOD, in seconds relative to `start`."""
+        if start:
+            return self._fetch_window(vid, int(start), duration)
+        return self._fetch_window(vid, 0, duration)
+
+    def _fetch_window(self, vid: str, start: int, duration: float) -> ChatData:
         seconds = int(math.ceil(duration))
         n = max(1, self.workers)
-        bounds = [int(seconds * i / n) for i in range(n + 1)]
+        bounds = [start + int(seconds * i / n) for i in range(n + 1)]
 
         def run(i: int):
             try:
@@ -411,7 +437,7 @@ class ChatReplay:
         problems = sorted({p for _, _, p in parts if p})
         if covered == 0 and problems:
             raise TwitchError("; ".join(problems))
-        data = build_chat_data([m for msgs, _, _ in parts for m in msgs], seconds)
+        data = build_chat_data([(t - start, text) for msgs, _, _ in parts for t, text in msgs], seconds)
         data.coverage = covered / max(1, seconds)
         data.problems = problems
         if problems:
