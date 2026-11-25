@@ -11,7 +11,7 @@ import pytest
 
 from clipfarm import db as dbm
 from clipfarm.config import load_config
-from clipfarm.publish import schedule
+from clipfarm.publish import Published, schedule
 from clipfarm.publish.instagram import REFRESH_AFTER, Instagram, InstagramError, build_caption
 
 TZ = "Asia/Yerevan"
@@ -124,7 +124,7 @@ def _cfg(tmp_path, **over):
             os.environ.pop("DATA_DIR", None)
         else:
             os.environ["DATA_DIR"] = old
-    return dataclasses.replace(cfg, instagram_access_token="IGAAT-env-token", **over)
+    return dataclasses.replace(cfg, **({"instagram_access_token": "IGAAT-env-token"} | over))
 
 
 class Graph:
@@ -143,8 +143,14 @@ class Graph:
             return httpx.Response(400, json={"error": self.fail[path]})
         if path == "/me":
             return httpx.Response(200, json={"user_id": "1789", "username": "sergey"})
+        if req.url.host == "rupload.facebook.com":
+            self.uploaded = (dict(req.headers), req.content)
+            return httpx.Response(200, json={"success": True})
         if path == "/1789/media":
-            assert params["media_type"] == "REELS" and params["video_url"].startswith("https://")
+            assert params["media_type"] == "REELS"
+            if params.get("upload_type") == "resumable":
+                return httpx.Response(200, json={"id": "C1", "uri": "https://rupload.facebook.com/ig-api-upload/v99.0/C1"})
+            assert params["video_url"].startswith("https://")
             return httpx.Response(200, json={"id": "C1"})
         if path == "/C1":
             return httpx.Response(200, json={"status_code": self.statuses.pop(0), "status": "x"})
@@ -211,18 +217,24 @@ def test_token_refresh_and_env_takeover(tmp_path):
 # --- poster -----------------------------------------------------------------------------------------
 
 class FakePublisher:
-    def __init__(self, error=None):
+    def __init__(self, error=None, note=""):
         self.error = error
+        self.note = note
         self.calls = []
+        self.items = []
 
-    def publish_reel(self, url, caption, cover_offset=None):
-        self.calls.append((url, caption))
-        self.cover = cover_offset
+    def publish(self, item):
+        url = item.public_url() if item.public_url else None
+        self.calls.append((url, item.text))
+        self.items.append(item)
+        self.cover = item.cover_offset
         if self.error:
             raise self.error
-        return "M1", "https://www.instagram.com/reel/xyz/"
+        return Published("M1", "https://www.instagram.com/reel/xyz/", note=self.note)
 
     def maybe_refresh(self):
+        if self.error and not self.error.transient:
+            raise self.error
         return False
 
 
@@ -300,11 +312,20 @@ def test_poster_permanent_error_reports_once(tmp_path):
     assert d.posts_for_clip(cid)[0]["status"] == dbm.POST_FAILED and len(tg.sent) == 1
 
 
-def test_poster_without_r2_explains(tmp_path):
+def test_poster_without_r2_sends_the_file(tmp_path):
     pub = FakePublisher()
     p, d, cid, tg, _, _ = _poster(tmp_path, pub, r2=False)
     p.tick()
-    assert pub.calls == [] and "Cloudflare R2" in d.posts_for_clip(cid)[0]["error"]
+    assert pub.calls[0][0] is None and pub.items[0].local_path.name == "clip-01.mp4"
+    assert d.posts_for_clip(cid)[0]["status"] == dbm.POST_POSTED
+
+
+def test_poster_reports_a_missing_clip_file(tmp_path):
+    pub = FakePublisher()
+    p, d, cid, tg, _, _ = _poster(tmp_path, pub, r2=False)
+    (tmp_path / "clip-01.mp4").unlink()
+    p.tick()
+    assert pub.calls == [] and "clip file is gone" in d.posts_for_clip(cid)[0]["error"]
 
 
 def test_poster_skips_clip_that_was_undone(tmp_path):
@@ -329,3 +350,50 @@ def test_reel_cover_offset_is_sent_in_ms(tmp_path):
     ig.publish_reel("https://pub-x.r2.dev/a.mp4", "c", cover_offset=7.5)
     container = [c for c in g.calls if c[1] == "/1789/media"][0][2]
     assert container["thumb_offset"] == "7500"
+
+
+def test_reel_from_file_uses_resumable_upload(tmp_path):
+    g = Graph()
+    ig, _, _ = _ig(tmp_path, g)
+    video = tmp_path / "c.mp4"
+    video.write_bytes(b"0123456789")
+    assert ig.publish_reel_file(video, "caption", cover_offset=2) == ("M9", "https://www.instagram.com/reel/abc/")
+    headers, body = g.uploaded
+    assert body == b"0123456789" and headers["file_size"] == "10" and headers["offset"] == "0"
+    assert headers["authorization"] == "OAuth IGAAT-env-token"
+    container = [c for c in g.calls if c[1] == "/1789/media"][0][2]
+    assert container["upload_type"] == "resumable" and "video_url" not in container
+
+
+def test_poster_notes_and_quota_wait(tmp_path):
+    from clipfarm.publish import PublishError
+
+    pub = FakePublisher(note="⚠️ YouTube put it up as Private")
+    p, d, cid, tg, _, _ = _poster(tmp_path, pub)
+    p.tick()
+    assert "Private" in tg.sent[-1][1] and "Private" in d.posts_for_clip(cid)[0]["error"]
+    pub = FakePublisher(PublishError("limit", transient=True, retry_after=6 * 3600))
+    p, d, cid, tg, _, t = _poster(tmp_path / "q", pub)
+    p.tick()
+    assert d.posts_for_clip(cid)[0]["next_try_at"] == t["now"] + 6 * 3600
+
+
+def test_expired_login_warns_the_group_once(tmp_path):
+    from clipfarm.publish import PublishError
+
+    pub = FakePublisher(PublishError("YouTube login expired", transient=False, code="invalid_grant"))
+    p, d, cid, tg, _, t = _poster(tmp_path, pub)
+    p.cfg = dataclasses.replace(p.cfg, telegram_chat_id=-100)
+    p.maintenance()
+    p.maintenance()
+    assert [m[:2] for m in tg.sent] == [(-100, "⚠️ Instagram: YouTube login expired")]
+    t["now"] += 13 * 3600
+    p.maintenance()
+    assert len(tg.sent) == 2
+
+
+def test_post_platforms_include_youtube_after_login(tmp_path):
+    cfg = _cfg(tmp_path, instagram_access_token="")
+    assert cfg.post_platforms == []
+    cfg.youtube_token_path.write_text("{}")
+    assert cfg.post_platforms == ["youtube"]

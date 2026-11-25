@@ -92,6 +92,9 @@ class Config:
     # Posting
     instagram_access_token: str
     instagram_api_base: str
+    youtube_client_path: Path
+    youtube_privacy: str
+    youtube_category: str
     posts_per_day: int
     post_window: str
     post_tz: str
@@ -124,9 +127,17 @@ class Config:
         )
 
     @property
+    def youtube_token_path(self) -> Path:
+        """Written by `clipfarm.cli youtube-login`."""
+        return self.data_dir / "youtube_token.json"
+
+    @property
     def post_platforms(self) -> list[str]:
-        """Platforms ClipFarm can post to with the credentials in .env."""
-        return ["instagram"] if self.instagram_access_token else []
+        """Platforms ClipFarm can post to: Instagram with a token in .env, YouTube once logged in."""
+        out = ["instagram"] if self.instagram_access_token else []
+        if self.youtube_token_path.exists():
+            out.append("youtube")
+        return out
 
     @property
     def allowed_user_ids(self) -> set[int]:
@@ -180,6 +191,9 @@ def load_config(env_file: str | None = None) -> Config:
         presets_path=Path(_str("PRESETS_PATH", "./presets.json")).resolve(),
         instagram_access_token=_str("INSTAGRAM_ACCESS_TOKEN"),
         instagram_api_base=_str("INSTAGRAM_API_BASE", "https://graph.instagram.com"),
+        youtube_client_path=Path(_str("YOUTUBE_CLIENT_FILE", str(data_dir / "youtube_client.json"))).resolve(),
+        youtube_privacy=_str("YOUTUBE_PRIVACY", "public"),
+        youtube_category=_str("YOUTUBE_CATEGORY", "20"),
         posts_per_day=_int("POSTS_PER_DAY", 15),
         post_window=_str("POST_WINDOW", "10:00-23:00"),
         post_tz=_str("POST_TZ", "Asia/Yerevan"),

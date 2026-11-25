@@ -101,7 +101,7 @@ async def cmd_schedule(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     cfg = ctx.bot_data["cfg"]
     rows = _db(ctx).upcoming_posts(20)
     if not cfg.post_platforms:
-        await update.effective_message.reply_text("No platform connected yet (set INSTAGRAM_ACCESS_TOKEN in .env).")
+        await update.effective_message.reply_text("No platform connected yet (INSTAGRAM_ACCESS_TOKEN in .env, or the YouTube login on the VM).")
         return
     if not rows:
         await update.effective_message.reply_text("Nothing scheduled. Approve clips with ✅ Post.")

@@ -3,6 +3,7 @@
     python -m clipfarm.cli process <url> [--clips N] [--keep-work]
     python -m clipfarm.cli cleanup
     python -m clipfarm.cli section <url> 6:00:00-6:01:00   (download test, nothing else)
+    python -m clipfarm.cli youtube-login                    (once, to let ClipFarm upload Shorts)
 """
 
 from __future__ import annotations
@@ -94,6 +95,37 @@ def cmd_section(args) -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def cmd_youtube_login(_args) -> None:
+    import httpx
+
+    from .publish import PublishError
+    from .publish import youtube as yt
+
+    cfg = load_config()
+    try:
+        client = yt.load_client(cfg.youtube_client_path)
+    except PublishError as exc:
+        sys.exit(f"{exc}\nCopy the OAuth client JSON (Desktop app) from Google Cloud to {cfg.youtube_client_path}")
+    login = yt.new_login()
+    print("1. Open this link in your browser (on any computer) and sign in with the Google account")
+    print("   that owns the YouTube channel. If Google asks which channel, pick the one to post to.")
+    print("   'Google hasn't verified this app' is expected: Advanced > Go to ... (unsafe) > Continue.\n")
+    print(yt.auth_url(client[0], login))
+    print("\n2. After you allow access, the browser ends on a page that doesn't load (127.0.0.1:8765).")
+    print("   That's expected. Copy the WHOLE address from the address bar and paste it here.\n")
+    pasted = input("Address: ")
+    try:
+        with httpx.Client(timeout=60) as http:
+            code = yt.code_from_paste(pasted, login["state"])
+            token = yt.exchange_code(http, client, code, login["verifier"])
+            yt.save_token(cfg.youtube_token_path, token)
+            channel = yt.YouTube(cfg, http=http).channel()
+    except PublishError as exc:
+        sys.exit(f"Login failed: {exc}")
+    print(f"\nLogged in. Shorts will go to the channel: {channel['title']}")
+    print("Approved clips are now booked for YouTube too (no restart needed).")
+
+
 def main() -> None:
     sys.stdout.reconfigure(line_buffering=True)  # `> run.log` would otherwise buffer status lines
     setup_logging()
@@ -110,6 +142,9 @@ def main() -> None:
     s.add_argument("url")
     s.add_argument("range", help="e.g. 6:00:00-6:01:00")
     s.set_defaults(func=cmd_section)
+
+    y = sub.add_parser("youtube-login", help="Let ClipFarm upload to your YouTube channel (once)")
+    y.set_defaults(func=cmd_youtube_login)
 
     c = sub.add_parser("cleanup", help="Delete clips older than the retention window")
     c.set_defaults(func=cmd_cleanup)

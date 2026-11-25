@@ -225,13 +225,26 @@ def check_instagram(cfg) -> None:
                 detail += f", posts used today: {used}/{total}"
         except Exception:
             pass
-        if not (cfg.r2_enabled and cfg.r2_public_base_url):
-            report("FAIL", "Instagram", detail + ": token works, but Instagram needs Cloudflare R2 with "
-                   "R2_PUBLIC_BASE_URL to fetch the videos")
-        else:
-            report("OK", "Instagram", detail)
+        how = "via R2 URL" if (cfg.r2_enabled and cfg.r2_public_base_url) else "direct upload"
+        report("OK", "Instagram", f"{detail}, {how}")
     except Exception as exc:
         report("FAIL", "Instagram", str(exc)[:250])
+
+
+def check_youtube(cfg) -> None:
+    if not cfg.youtube_client_path.exists():
+        report("WARN", "YouTube", f"no OAuth client file at {cfg.youtube_client_path}: no YouTube posting")
+        return
+    if not cfg.youtube_token_path.exists():
+        report("WARN", "YouTube", "not logged in: run `.venv/bin/python -m clipfarm.cli youtube-login`")
+        return
+    try:
+        from .publish.youtube import YouTube
+
+        ch = YouTube(cfg).channel()
+        report("OK", "YouTube", f"channel {ch['title']}, uploads as {cfg.youtube_privacy}")
+    except Exception as exc:
+        report("FAIL", "YouTube", str(exc)[:250])
 
 
 def check_r2(cfg) -> None:
@@ -244,7 +257,7 @@ def check_r2(cfg) -> None:
         R2(cfg).client.head_bucket(Bucket=cfg.r2_bucket)
         detail = f"bucket {cfg.r2_bucket}"
         if not cfg.r2_public_base_url:
-            detail += " (no R2_PUBLIC_BASE_URL: Instagram posting will need it)"
+            detail += " (no R2_PUBLIC_BASE_URL: Instagram gets the file directly instead)"
         report("OK", "Cloudflare R2", detail)
     except Exception as exc:
         report("FAIL", "Cloudflare R2", str(exc)[:200])
@@ -283,6 +296,7 @@ def main() -> None:
     check_twitch(cfg)
     check_r2(cfg)
     check_instagram(cfg)
+    check_youtube(cfg)
     check_youtube_cookies(cfg)
     fails = [r for r in results if r[0] == "FAIL"]
     print()

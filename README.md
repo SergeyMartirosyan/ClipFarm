@@ -22,8 +22,9 @@ Telegram link ─► yt-dlp ─► transcript ─► signals + LLM judge ─► 
 | 4. Render: boundary snapping, layout detection, burned captions, preview, R2 | ✅ |
 | 5. Telegram approval (Post / Edit title / Skip / Undo) | ✅ |
 | 6a. Posting scheduler (slots per day, poster service, Telegram reports, /schedule) | ✅ |
-| 6b. Instagram Reels (Instagram Login, via public R2 URL, auto token refresh) | ✅ |
-| 6c. YouTube Shorts, TikTok | ⏳ |
+| 6b. Instagram Reels (Instagram Login, direct upload or R2 URL, auto token refresh) | ✅ |
+| 6c. YouTube Shorts (OAuth Desktop client, resumable upload) | ✅ |
+| 6d. TikTok | ⏳ |
 | 7. VM setup script, systemd services, self-check | ✅ |
 | Twitch signals: viewer clips (Helix API) + chat replay bursts and emotes | ✅ |
 | Gemini watches frames of the top 20 candidates and ranks them against each other | ✅ |
@@ -80,7 +81,7 @@ Fill in `.env` (all keys are described in `.env.example`):
 - `TELEGRAM_BOT_TOKEN`: from @BotFather. `TELEGRAM_OWNER_ID`: your numeric id (ask @userinfobot). Only that user can use the bot.
 - `GEMINI_API_KEY`: from Google AI Studio (free).
 - `ANTHROPIC_API_KEY`: from console.anthropic.com. Optional, used only as the fallback. Also set a spend limit in the console.
-- `R2_*`: Cloudflare R2 bucket and keys. Optional; without them, clips stay local only.
+- `R2_*`: Cloudflare R2 bucket and keys. Optional; without them, clips stay local only (posting still works).
 - `TWITCH_CLIENT_ID` / `TWITCH_CLIENT_SECRET`: free app at dev.twitch.tv/console/apps. Enables viewer clips for Twitch VODs. Chat replay needs no credentials (`TWITCH_CHAT=1`), but it uses Twitch's unofficial web endpoint: if Twitch changes it, jobs continue without chat and the status message says so.
 - `YTDLP_COOKIES`: a Netscape cookies file for YouTube. Usually needed from datacenter IPs ("Sign in to confirm you're not a bot").
 
@@ -115,9 +116,25 @@ and replies under the clip in Telegram with the link (or the error). Temporary f
 
 **Instagram** (Instagram API with Instagram Login, no Facebook Page): needs a professional account,
 a Meta app with "API setup with Instagram login", your account added and a token generated there
-(`INSTAGRAM_ACCESS_TOKEN`), and Cloudflare R2 with a public bucket URL, because Instagram fetches the
-video from a URL. The token is refreshed automatically before it expires. `clipfarm.check` shows the
-account and today's quota.
+(`INSTAGRAM_ACCESS_TOKEN`). The video is uploaded straight from the VM (resumable upload); with
+Cloudflare R2 and a public bucket URL set, Instagram fetches it from R2 instead. The token is
+refreshed automatically before it expires. `clipfarm.check` shows the account and today's quota.
+
+**YouTube Shorts** (YouTube Data API): a Google Cloud project with the YouTube Data API v3 enabled,
+an OAuth client of type *Desktop app* saved as `data/youtube_client.json`, and your Google account
+added as a test user. Then log in once on the VM:
+
+```bash
+.venv/bin/python -m clipfarm.cli youtube-login
+```
+
+Open the printed link, allow access, and paste back the address the browser ends on (a
+`127.0.0.1:8765` page that doesn't load, which is expected). From then on approved clips are booked
+for YouTube too. Uploads ask for `YOUTUBE_PRIVACY` (default `public`); Google keeps uploads from
+unaudited API projects private, so each upload reads back its real privacy and the group is told if
+it went up as Private. While the OAuth app is in *Testing* mode, Google ends the login after 7 days;
+the poster notices and asks in the group for `youtube-login` again. A daily-quota error is retried
+after 6 hours.
 
 ## Friends and a group chat
 
@@ -193,7 +210,8 @@ clipfarm/
 ├── poster.py        publishes approved clips at their slots
 ├── publish/
 │   ├── schedule.py    posting slots
-│   └── instagram.py   Instagram Reels client
+│   ├── instagram.py   Instagram Reels client
+│   └── youtube.py     YouTube Shorts client + login
 └── pipeline/
     ├── run.py         orchestrates one link end to end
     ├── download.py    yt-dlp: video, heatmap, English subtitles

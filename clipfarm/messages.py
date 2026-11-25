@@ -62,7 +62,7 @@ def job_text(job: Mapping[str, Any], detail: str = "", extra: str = "") -> str:
     return "\n".join(lines)
 
 
-POST_LABEL = {"instagram": "Instagram"}
+POST_LABEL = {"instagram": "Instagram", "youtube": "YouTube"}
 
 
 def posts_lines(posts, tz_name: str) -> list[str]:
