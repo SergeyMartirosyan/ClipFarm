@@ -106,8 +106,7 @@ async def cmd_schedule(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not rows:
         await update.effective_message.reply_text("Nothing scheduled. Approve clips with ✅ Post.")
         return
-    lines = [f"{describe(r['scheduled_at'], cfg.post_tz)} · {messages.POST_LABEL.get(r['platform'], r['platform'])} · "
-             f"{r['title'][:60]}" for r in rows]
+    lines = [messages.schedule_line(r, cfg.post_tz) for r in rows]
     await update.effective_message.reply_text("Upcoming posts:\n" + "\n".join(lines))
 
 

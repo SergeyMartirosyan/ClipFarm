@@ -494,3 +494,18 @@ def test_retry_failed_posts_now(tmp_path, monkeypatch):
     cli.cmd_retry_failed(SimpleNamespace(platform="instagram", first=True))
     post = d.posts_for_clip(cid)[0]
     assert post["status"] == dbm.POST_POSTED and post["attempts"] == 0 and d.failed_posts() == []
+
+
+def test_schedule_line_shows_posting_and_retries():
+    from clipfarm import messages
+
+    base = {"platform": "instagram", "title": "T", "scheduled_at": ts("2026-11-25T20:51"), "attempts": 0,
+            "next_try_at": None, "error": None}
+    now = ts("2026-11-25T20:58")
+    assert "posting now" in messages.schedule_line({**base, "status": "posting"}, TZ, now)
+    retry = messages.schedule_line({**base, "status": "scheduled", "attempts": 1, "next_try_at": ts("2026-11-25T21:01"),
+                                    "error": "Instagram: busy"}, TZ, now)
+    assert "retry 2/4 at today 21:01: Instagram: busy" in retry
+    assert "due" in messages.schedule_line({**base, "status": "scheduled"}, TZ, now)
+    assert messages.schedule_line({**base, "status": "scheduled", "scheduled_at": ts("2026-11-25T21:40")}, TZ, now) \
+        == "today 21:40 · Instagram · T"

@@ -65,6 +65,29 @@ def job_text(job: Mapping[str, Any], detail: str = "", extra: str = "") -> str:
 POST_LABEL = {"instagram": "Instagram", "youtube": "YouTube"}
 
 
+def schedule_line(row: Mapping[str, Any], tz_name: str, now: float | None = None) -> str:
+    """One /schedule line: when, where, what, and whether it is being posted or retried."""
+    import time
+
+    from .publish.schedule import describe
+
+    now = time.time() if now is None else now
+    name = POST_LABEL.get(row["platform"], row["platform"])
+    line = f"{describe(row['scheduled_at'], tz_name, now)} · {name} · {row['title'][:60]}"
+    attempts = _get(row, "attempts", 0)
+    if row["status"] == dbm.POST_POSTING:
+        line += "\n   ⏳ posting now"
+    elif attempts:
+        retry_at = _get(row, "next_try_at", None) or row["scheduled_at"]
+        line += f"\n   🔁 retry {attempts + 1}/4 at {describe(retry_at, tz_name, now)}"
+        error = _get(row, "error")
+        if error:
+            line += f": {error[:120]}"
+    elif row["scheduled_at"] < now - 120:
+        line += "\n   ⏳ due, the poster picks it up within a minute"
+    return line
+
+
 def posts_lines(posts, tz_name: str) -> list[str]:
     """One line per platform: when it goes out, or what happened."""
     from .publish.schedule import describe
