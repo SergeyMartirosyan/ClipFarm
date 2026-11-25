@@ -26,6 +26,9 @@ class PostItem:
     cover_offset: float | None = None
     # Uploads the clip to R2 and returns its public URL; None when R2 isn't set up.
     public_url: Callable[[], str] | None = None
+    # Identifies this post across retries (e.g. "post12"), so a retry can find out whether the
+    # previous attempt actually went out.
+    key: str = ""
 
 
 @dataclass

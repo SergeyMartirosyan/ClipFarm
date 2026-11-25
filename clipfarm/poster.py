@@ -72,7 +72,7 @@ class Poster:
         self.db.update_clip(clip["id"], r2_key=key, public_url=url)
         return url
 
-    def item_for(self, clip, platform: str) -> PostItem:
+    def item_for(self, clip, platform: str, post_id: int | None = None) -> PostItem:
         local = Path(clip["local_path"] or "")
         has_url = bool(clip["public_url"]) or (self.r2 is not None and bool(self.cfg.r2_public_base_url))
         if not local.exists() and not (platform == "instagram" and clip["public_url"]):
@@ -85,6 +85,7 @@ class Poster:
             local_path=local,
             cover_offset=clip["cover_offset"],
             public_url=(lambda: self.public_url(clip)) if has_url else None,
+            key=f"post{post_id}" if post_id else "",
         )
 
     def notify(self, clip, text: str) -> None:
@@ -111,7 +112,7 @@ class Poster:
                 return
             if publisher is None:
                 raise PublishError(f"{name} isn't connected", transient=False)
-            done = publisher.publish(self.item_for(clip, row["platform"]))
+            done = publisher.publish(self.item_for(clip, row["platform"], row["id"]))
         except PublishError as exc:
             self._failed(row, clip, name, exc)
             return

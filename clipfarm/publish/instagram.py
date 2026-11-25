@@ -175,11 +175,48 @@ class Instagram:
         return rows[0]
 
     def publish(self, item: PostItem) -> Published:
-        if item.public_url is not None:
-            media_id, link = self.publish_reel(item.public_url(), item.text, item.cover_offset)
-        else:
-            media_id, link = self.publish_reel_file(Path(item.local_path), item.text, item.cover_offset)
-        return Published(id=media_id, url=link)
+        """Retries are duplicate-proof: the container of an attempt is remembered, and the next
+        attempt first asks Instagram what became of it (already published, ready to publish, still
+        processing) before uploading again. Meta sometimes answers an error and posts anyway."""
+        slot = f"ig_container_{item.key}" if item.key else None
+        remember = (lambda cid: self.db.kv_set(slot, cid)) if slot else (lambda cid: None)
+        try:
+            saved = self.db.kv_get(slot) if slot else None
+            done = self._resume(saved) if saved else None
+            if done is None:
+                if slot:
+                    self.db.kv_set(slot, None)
+                if item.public_url is not None:
+                    done = self.publish_reel(item.public_url(), item.text, item.cover_offset, remember)
+                else:
+                    done = self.publish_reel_file(Path(item.local_path), item.text, item.cover_offset, remember)
+        except InstagramError as exc:
+            if slot and not exc.transient:
+                self.db.kv_set(slot, None)
+            raise
+        if slot:
+            self.db.kv_set(slot, None)
+        return Published(id=done[0], url=done[1])
+
+    def _resume(self, container: str) -> tuple[str, str] | None:
+        """What became of an earlier attempt's container. None: start over."""
+        try:
+            code = self._request("GET", f"{self.base}/{container}", {"fields": "status_code"}).get("status_code")
+        except InstagramError as exc:
+            if exc.transient:
+                raise
+            return None
+        log.info("Instagram: earlier attempt's container %s is %s", container, code)
+        if code == "PUBLISHED":
+            return self._latest_media()
+        if code in ("FINISHED", "IN_PROGRESS"):
+            return self._finish(container)
+        return None
+
+    def _latest_media(self) -> tuple[str, str]:
+        rows = self._request("GET", f"{self.base}/{self.user_id()}/media",
+                             {"fields": "id,permalink", "limit": "1"}).get("data") or [{}]
+        return str(rows[0].get("id", "")), rows[0].get("permalink", "")
 
     def _container_params(self, caption: str, cover_offset: float | None) -> dict:
         params = {"media_type": "REELS", "caption": caption, "share_to_feed": "true"}
@@ -187,14 +224,18 @@ class Instagram:
             params["thumb_offset"] = str(int(cover_offset * 1000))
         return params
 
-    def publish_reel(self, video_url: str, caption: str, cover_offset: float | None = None) -> tuple[str, str]:
+    def publish_reel(self, video_url: str, caption: str, cover_offset: float | None = None,
+                     on_container=None) -> tuple[str, str]:
         """Instagram fetches the video from a public URL. Returns (media id, permalink).
         cover_offset: seconds into the video for the cover frame."""
         params = self._container_params(caption, cover_offset) | {"video_url": video_url}
         container = self._request("POST", f"{self.base}/{self.user_id()}/media", params)["id"]
+        if on_container:
+            on_container(container)
         return self._finish(container)
 
-    def publish_reel_file(self, path: Path, caption: str, cover_offset: float | None = None) -> tuple[str, str]:
+    def publish_reel_file(self, path: Path, caption: str, cover_offset: float | None = None,
+                          on_container=None) -> tuple[str, str]:
         """Sends the file from this machine (resumable upload): no public URL needed."""
         params = self._container_params(caption, cover_offset) | {"upload_type": "resumable"}
         body = self._request("POST", f"{self.base}/{self.user_id()}/media", params)
@@ -221,6 +262,8 @@ class Instagram:
             hiccup = "processing failed" in raw.lower() or "ProcessingFailedError" in raw
             raise InstagramError(f"Instagram refused the upload (HTTP {resp.status_code} from {where}): {raw}",
                                  transient=resp.status_code >= 500 or hiccup)
+        if on_container:
+            on_container(container)  # only once the video is in: an empty container is useless later
         return self._finish(container)
 
     def _finish(self, container: str) -> tuple[str, str]:
@@ -236,7 +279,22 @@ class Instagram:
             if self._clock() > deadline:
                 raise InstagramError("Instagram took too long to process the video", transient=True)
             self._sleep(POLL_INTERVAL)
-        media_id = self._request("POST", f"{self.base}/{self.user_id()}/media_publish", {"creation_id": container})["id"]
+        try:
+            media_id = self._request("POST", f"{self.base}/{self.user_id()}/media_publish",
+                                     {"creation_id": container})["id"]
+        except InstagramError as exc:
+            # Meta sometimes answers "unexpected error" here and publishes anyway: look before failing.
+            if not exc.transient:
+                raise
+            self._sleep(15)
+            try:
+                code = self._request("GET", f"{self.base}/{container}", {"fields": "status_code"}).get("status_code")
+            except InstagramError:
+                raise exc
+            if code != "PUBLISHED":
+                raise
+            log.info("Instagram: publish call failed (%s) but the reel went out", exc)
+            return self._latest_media()
         try:
             link = self._request("GET", f"{self.base}/{media_id}", {"fields": "permalink"}).get("permalink", "")
         except InstagramError:

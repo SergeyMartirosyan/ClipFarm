@@ -151,7 +151,7 @@ class Graph:
         if req.url.host == "rupload.facebook.com":
             self.uploaded = (dict(req.headers), req.content)
             return httpx.Response(200, json={"success": True})
-        if path == "/1789/media":
+        if path == "/1789/media" and req.method == "POST":
             assert params["media_type"] == "REELS"
             if params.get("upload_type") == "resumable":
                 return httpx.Response(200, json={"id": "C1", "uri": "https://rupload.facebook.com/ig-api-upload/v99.0/C1"})
@@ -161,7 +161,12 @@ class Graph:
             return httpx.Response(200, json={"status_code": self.statuses.pop(0), "status": "x"})
         if path == "/1789/media_publish":
             assert params["creation_id"] == "C1"
+            self.publish_calls = getattr(self, "publish_calls", 0) + 1
+            if getattr(self, "publish_error", None):
+                return httpx.Response(500, json={"error": self.publish_error})
             return httpx.Response(200, json={"id": "M9"})
+        if path == "/1789/media" and req.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": "M9", "permalink": "https://www.instagram.com/reel/abc/"}]})
         if path == "/M9":
             return httpx.Response(200, json={"permalink": "https://www.instagram.com/reel/abc/"})
         if path == "/refresh_access_token":
@@ -509,3 +514,45 @@ def test_schedule_line_shows_posting_and_retries():
     assert "due" in messages.schedule_line({**base, "status": "scheduled"}, TZ, now)
     assert messages.schedule_line({**base, "status": "scheduled", "scheduled_at": ts("2026-11-25T21:40")}, TZ, now) \
         == "today 21:40 · Instagram · T"
+
+
+def _ig_item(tmp_path, key="post7"):
+    from clipfarm.publish import PostItem
+
+    video = tmp_path / "c.mp4"
+    video.write_bytes(b"xx")
+    return PostItem(title="t", text="c", hashtags=[], local_path=video, key=key)
+
+
+def test_publish_error_but_reel_went_out_counts_as_posted(tmp_path):
+    g = Graph(statuses=("FINISHED", "PUBLISHED"))
+    g.publish_error = {"message": "An unexpected error has occurred.", "code": 2}
+    ig, d, _ = _ig(tmp_path, g)
+    done = ig.publish(_ig_item(tmp_path))
+    assert (done.id, done.url) == ("M9", "https://www.instagram.com/reel/abc/")
+    assert d.kv_get("ig_container_post7") is None
+
+
+def test_retry_resumes_the_earlier_container_instead_of_uploading_again(tmp_path):
+    g = Graph(statuses=("FINISHED", "FINISHED"))
+    g.publish_error = {"message": "An unexpected error has occurred.", "code": 2}
+    ig, d, _ = _ig(tmp_path, g)
+    with pytest.raises(InstagramError) as e:
+        ig.publish(_ig_item(tmp_path))
+    assert e.value.transient and d.kv_get("ig_container_post7") == "C1"
+    # Next attempt: the container is FINISHED, so it is only published, not uploaded again.
+    g.publish_error = None
+    g.statuses = ["FINISHED", "FINISHED"]
+    uploads_before = sum(1 for c in g.calls if c[1] == "/1789/media" and c[0] == "POST")
+    assert ig.publish(_ig_item(tmp_path)).id == "M9"
+    assert sum(1 for c in g.calls if c[1] == "/1789/media" and c[0] == "POST") == uploads_before
+    assert d.kv_get("ig_container_post7") is None
+
+
+def test_retry_of_an_already_published_container_posts_nothing_new(tmp_path):
+    g = Graph(statuses=("PUBLISHED",))
+    ig, d, _ = _ig(tmp_path, g)
+    d.kv_set("ig_container_post7", "C1")
+    assert ig.publish(_ig_item(tmp_path)).url == "https://www.instagram.com/reel/abc/"
+    assert not any(c[1] in ("/1789/media_publish",) for c in g.calls)
+    assert not any(c[1] == "/1789/media" and c[0] == "POST" for c in g.calls)
