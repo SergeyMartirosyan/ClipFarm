@@ -41,7 +41,7 @@ cat <<MSG
 Done. Next:
   1. nano ${APP_DIR}/.env                      # paste your keys
   2. .venv/bin/python -m clipfarm.check        # checks every key and tool
-  3. sudo systemctl restart clipfarm-bot clipfarm-worker
+  3. sudo systemctl restart clipfarm-bot clipfarm-worker clipfarm-poster
   4. Send your bot a video link in Telegram.
 
 Logs:  journalctl -u clipfarm-worker -f      (or clipfarm-bot)
