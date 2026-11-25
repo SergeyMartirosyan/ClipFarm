@@ -477,7 +477,7 @@ def test_upload_error_keeps_metas_whole_answer(tmp_path):
     video.write_bytes(b"xx")
     with pytest.raises(InstagramError) as e:
         ig.publish_reel_file(video, "c")
-    assert "ProcessingFailedError" in str(e.value) and "HTTP 400" in str(e.value)
+    assert "ProcessingFailedError" in str(e.value) and "HTTP 400" in str(e.value) and e.value.transient
     assert "rupload.facebook.com/ig-api-upload/v99.0/<container>" in str(e.value) and "IGAAT" not in str(e.value)
 
 

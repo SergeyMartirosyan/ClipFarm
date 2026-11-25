@@ -216,8 +216,11 @@ class Instagram:
             raw = " ".join(resp.text.split())[:400] if resp.text else "(empty)"
             where = uri.split("?")[0].replace(container, "<container>")
             log.warning("Instagram upload to %s failed: HTTP %s %s", where, resp.status_code, raw)
+            # "Request processing failed" (ProcessingFailedError) is a hiccup on Meta's side: the same
+            # clip went through on a retry. Only other 4xx answers are final.
+            hiccup = "processing failed" in raw.lower() or "ProcessingFailedError" in raw
             raise InstagramError(f"Instagram refused the upload (HTTP {resp.status_code} from {where}): {raw}",
-                                 transient=resp.status_code >= 500)
+                                 transient=resp.status_code >= 500 or hiccup)
         return self._finish(container)
 
     def _finish(self, container: str) -> tuple[str, str]:
