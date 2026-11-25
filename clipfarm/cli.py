@@ -2,6 +2,7 @@
 
     python -m clipfarm.cli process <url> [--clips N] [--keep-work]
     python -m clipfarm.cli cleanup
+    python -m clipfarm.cli section <url> 6:00:00-6:01:00   (download test, nothing else)
 """
 
 from __future__ import annotations
@@ -62,6 +63,37 @@ def cmd_cleanup(_args) -> None:
         print("R2 objects deleted:", R2(cfg).cleanup(cfg.r2_retention_days))
 
 
+def cmd_section(args) -> None:
+    """Download only a short range and report what came back: a quick check of long-stream parts."""
+    import shutil
+    import tempfile
+    import time
+    from pathlib import Path
+
+    from .longform import hms, parse_range
+    from .media import probe
+    from .pipeline import download
+
+    cfg = load_config()
+    rng = parse_range(" " + args.range, args.url, default_len=60)
+    if rng is None:
+        sys.exit("Give a range like 6:00:00-6:01:00")
+    work = Path(tempfile.mkdtemp(prefix="section-", dir=cfg.data_dir))
+    t0 = time.monotonic()
+    try:
+        info = download.probe_info(args.url, cfg.ytdlp_cookies)
+        fmt = download.pick_hls_video(info)
+        print(f"video variant: {fmt.get('format_id') if fmt else 'none (not HLS)'}"
+              + (f" · {fmt.get('vcodec')} · {fmt.get('height')}p" if fmt else ""))
+        src = download.download(args.url, work, cfg.ytdlp_cookies, rng)
+        v = probe(src.video_path)
+        print(f"OK in {time.monotonic() - t0:.0f}s: asked {hms(rng[0])}-{hms(rng[1])}, file starts at "
+              f"{hms(src.section_start or rng[0])}, {v.duration:.0f}s long, {v.width}x{v.height}, "
+              f"audio {'yes' if v.has_audio else 'NO'}, {src.video_path.stat().st_size / 1e6:.0f} MB")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def main() -> None:
     sys.stdout.reconfigure(line_buffering=True)  # `> run.log` would otherwise buffer status lines
     setup_logging()
@@ -73,6 +105,11 @@ def main() -> None:
     p.add_argument("--clips", type=int, help="Override CLIPS_PER_VIDEO")
     p.add_argument("--keep-work", action="store_true", help="Keep the downloaded source and audio")
     p.set_defaults(func=cmd_process)
+
+    s = sub.add_parser("section", help="Download test: only a short range of a long stream")
+    s.add_argument("url")
+    s.add_argument("range", help="e.g. 6:00:00-6:01:00")
+    s.set_defaults(func=cmd_section)
 
     c = sub.add_parser("cleanup", help="Delete clips older than the retention window")
     c.set_defaults(func=cmd_cleanup)

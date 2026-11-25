@@ -196,6 +196,8 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
         )
     offset = section[0] if section else 0.0
     source = download.download(url, workdir, cfg.ytdlp_cookies, section)
+    if source.section_start is not None:
+        offset = source.section_start  # the real start of the file (a segment boundary)
     if offset:
         # The file starts at `offset`: shift the video-wide replay heatmap into file time.
         source.heatmap = [

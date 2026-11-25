@@ -170,24 +170,58 @@ def _hls_server(tmp_path):
     return srv, f"http://127.0.0.1:{srv.server_address[1]}/index.m3u8", hits
 
 
-@pytest.mark.skipif(__import__("shutil").which("ffmpeg") is None, reason="ffmpeg missing")
-def test_hls_section_fetches_only_the_range(tmp_path):
-    from clipfarm.media import probe
-    from clipfarm.pipeline.download import hls_section
+TWITCH_PLAYLIST = """#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:10
+#ID3-EQUIV-TDTG:2026-11-20T10:00:00
+#EXT-X-PLAYLIST-TYPE:EVENT
+#EXT-X-MEDIA-SEQUENCE:0
+#EXT-X-TWITCH-ELAPSED-SECS:0.000
+#EXT-X-TWITCH-TOTAL-SECS:45.000
+#EXTINF:10.000,
+0.ts
+#EXTINF:10.000,
+1-unmuted.ts
+#EXT-X-DISCONTINUITY
+#EXTINF:10.000,
+2.ts
+#EXTINF:10.000,
+3.ts
+#EXTINF:5.000,
+4.ts
+#EXT-X-ENDLIST
+"""
 
-    srv, url, hits = _hls_server(tmp_path)
-    try:
-        out = hls_section(url, {"User-Agent": "x"}, (300, 360), tmp_path / "source.mp4")
-    finally:
-        srv.shutdown()
-    info = probe(out)
-    assert 59 <= info.duration <= 61 and info.has_audio and info.width == 320
-    segments = [h for h in hits if h.endswith(".ts")]
-    assert len(segments) <= 10  # 6 segments in range + the first one ffmpeg probes, not all 60
+
+def test_trim_playlist_keeps_only_the_range():
+    from clipfarm.pipeline.download import trim_playlist
+
+    text, start = trim_playlist(TWITCH_PLAYLIST, "https://cdn.example/abc/chunked/index-dvr.m3u8", (15, 31))
+    uris = [l for l in text.splitlines() if l and not l.startswith("#")]
+    assert start == 10
+    assert uris == ["https://cdn.example/abc/chunked/1-muted.ts", "https://cdn.example/abc/chunked/2.ts",
+                    "https://cdn.example/abc/chunked/3.ts"]
+    assert "#EXT-X-DISCONTINUITY" in text and text.rstrip().endswith("#EXT-X-ENDLIST")
+    assert "#EXT-X-PLAYLIST-TYPE:VOD" in text and "TWITCH" not in text
+    with pytest.raises(RuntimeError, match="no segments"):
+        trim_playlist(TWITCH_PLAYLIST, "https://cdn.example/x.m3u8", (100, 200))
 
 
-def test_section_download_retries_a_file_without_video(tmp_path, monkeypatch):
-    from clipfarm.pipeline import download
+def test_pick_hls_video_skips_audio_only_and_prefers_h264():
+    from clipfarm.pipeline.download import pick_hls_video
+
+    def f(fid, h, vcodec):
+        return {"format_id": fid, "url": f"https://x/{fid}.m3u8", "protocol": "m3u8_native", "height": h,
+                "vcodec": vcodec}
+
+    info = {"formats": [f("Audio_Only", None, "none"), f("1440p60", 1440, "avc1.64"), f("1080p60-hevc", 1080, "hev1.2"),
+                        f("1080p60", 1080, "avc1.64002A"), f("720p60", 720, "avc1.4D")]}
+    assert pick_hls_video(info)["format_id"] == "1080p60"
+    assert pick_hls_video({"formats": [f("Audio_Only", None, "none")]}) is None
+
+
+def _fake_ydl(playlist_url):
+    import urllib.request
 
     class FakeYDL:
         def __init__(self, opts):
@@ -200,12 +234,47 @@ def test_section_download_retries_a_file_without_video(tmp_path, monkeypatch):
             return False
 
         def extract_info(self, url, download=False):
-            return {"url": "https://usher.example/vod.m3u8", "protocol": "m3u8_native", "http_headers": {}}
+            return {"formats": [
+                {"format_id": "Audio_Only", "url": playlist_url, "protocol": "m3u8_native", "vcodec": "none"},
+                {"format_id": "1080p60", "url": playlist_url, "protocol": "m3u8_native", "vcodec": "avc1.64",
+                 "height": 180, "http_headers": {"User-Agent": "x"}}]}
+
+        def urlopen(self, url):
+            return urllib.request.urlopen(url)
+
+    return FakeYDL
+
+
+@pytest.mark.skipif(__import__("shutil").which("ffmpeg") is None, reason="ffmpeg missing")
+def test_hls_section_fetches_only_the_range(tmp_path, monkeypatch):
+    from clipfarm.media import probe
+    from clipfarm.pipeline import download
+
+    srv, url, hits = _hls_server(tmp_path)
+    monkeypatch.setattr(download, "YoutubeDL", _fake_ydl(url))
+    work = tmp_path / "work"
+    work.mkdir()
+    try:
+        info, out, start = download._download_section("https://www.twitch.tv/videos/1", work, "", (305, 365))
+    finally:
+        srv.shutdown()
+    v = probe(out)
+    assert start == 300 and 69 <= v.duration <= 71 and v.has_audio and v.width == 320  # segments 300..370
+    segments = [h for h in hits if h.endswith(".ts")]
+    assert len(segments) == 7  # exactly the segments in range, nothing before them
+    assert (work / "source.done").read_text() == "300.000"
+    # A re-run reuses the finished section (and its real start) without downloading again.
+    hits.clear()
+    assert download._download_section("https://www.twitch.tv/videos/1", work, "", (305, 365))[2] == 300
+
+
+def test_section_download_retries_a_file_without_video(tmp_path, monkeypatch):
+    from clipfarm.pipeline import download
 
     calls = []
 
-    def fake_hls(playlist, headers, section, out):
-        calls.append(section)
+    def fake_hls(playlist, playlist_path, out):
+        calls.append(playlist)
         out.write_bytes(b"broken" if len(calls) == 1 else b"good")
         return out
 
@@ -214,12 +283,15 @@ def test_section_download_retries_a_file_without_video(tmp_path, monkeypatch):
             raise RuntimeError("No video stream")
         return SimpleNamespace(width=1920, height=1080, duration=60, has_audio=True)
 
+    class Resp:
+        def read(self):
+            return TWITCH_PLAYLIST.encode()
+
+    FakeYDL = _fake_ydl("https://cdn.example/v/index-dvr.m3u8")
+    FakeYDL.urlopen = lambda self, url: Resp()
     monkeypatch.setattr(download, "YoutubeDL", FakeYDL)
     monkeypatch.setattr(download, "hls_section", fake_hls)
     monkeypatch.setattr("clipfarm.media.probe", fake_probe)
-    info, path = download._download_section("https://www.twitch.tv/videos/1", tmp_path, "", (7200, 7260))
-    assert calls == [(7200, 7260), (7200, 7260)] and path.read_bytes() == b"good"
-    assert (tmp_path / "source.done").exists()
-    # A re-run reuses the finished section without downloading again.
-    download._download_section("https://www.twitch.tv/videos/1", tmp_path, "", (7200, 7260))
-    assert len(calls) == 2
+    info, path, start = download._download_section("https://www.twitch.tv/videos/1", tmp_path, "", (20, 30))
+    assert len(calls) == 2 and path.read_bytes() == b"good" and start == 20
+    assert "https://cdn.example/v/2.ts" in calls[0] and "0.ts" not in calls[0]

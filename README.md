@@ -101,6 +101,7 @@ Without Telegram (for testing):
 ```bash
 .venv/bin/python -m clipfarm.cli process "https://www.youtube.com/watch?v=..." --clips 3
 .venv/bin/python -m clipfarm.cli cleanup
+.venv/bin/python -m clipfarm.cli section "https://www.twitch.tv/videos/..." 6:00:00-6:01:00   # download test for long-stream parts
 ```
 
 ## Posting
