@@ -397,3 +397,37 @@ def test_post_platforms_include_youtube_after_login(tmp_path):
     assert cfg.post_platforms == []
     cfg.youtube_token_path.write_text("{}")
     assert cfg.post_platforms == ["youtube"]
+
+
+def test_reset_approved_cancels_posts_and_restores_review(tmp_path):
+    d, cid = _db_with_clip(tmp_path)
+    d.update_clip(cid, decided_by="Anna")
+    d.schedule_post(cid, "instagram", 1000)
+    _, other = _db_with_clip(tmp_path / "x", status=dbm.SKIPPED)
+    rows = d.reset_approved()
+    assert [r["id"] for r in rows] == [cid] and rows[0]["chat_id"] == 5
+    clip = d.get_clip(cid)
+    assert clip["status"] == dbm.PENDING_REVIEW and clip["decided_by"] == ""
+    assert d.posts_for_clip(cid)[0]["status"] == dbm.POST_CANCELLED
+    # Approving again books it fresh.
+    d.schedule_post(cid, "instagram", 2000)
+    assert d.posts_for_clip(cid)[0]["status"] == dbm.POST_SCHEDULED
+    assert d.reset_approved() == []
+
+
+def test_reset_posts_command_updates_telegram(tmp_path, monkeypatch):
+    from clipfarm import cli, notify
+
+    cfg = _cfg(tmp_path, telegram_token="1:x", telegram_owner_id=9)
+    d = dbm.Database(cfg.db_path)
+    job = d.add_job("u", chat_id=-100)
+    cid = d.add_clip(job_id=job, idx=1, total=1, start=0, end=30, title="T", hashtags="gta6")
+    d.update_clip(cid, status=dbm.APPROVED, telegram_message_id=55)
+    d.schedule_post(cid, "instagram", 1000)
+    edits = []
+    monkeypatch.setattr(cli, "load_config", lambda: cfg)
+    monkeypatch.setattr(notify.Telegram, "edit_caption", lambda self, chat, mid, caption, kb=None: edits.append((chat, mid, kb)))
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    cli.cmd_reset_posts(SimpleNamespace(yes=True))
+    assert edits[0][:2] == (-100, 55) and edits[0][2]["inline_keyboard"][0][0]["callback_data"] == f"ok:{cid}"
+    assert d.get_clip(cid)["status"] == dbm.PENDING_REVIEW

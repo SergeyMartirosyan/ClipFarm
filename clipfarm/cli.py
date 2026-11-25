@@ -4,6 +4,7 @@
     python -m clipfarm.cli cleanup
     python -m clipfarm.cli section <url> 6:00:00-6:01:00   (download test, nothing else)
     python -m clipfarm.cli youtube-login                    (once, to let ClipFarm upload Shorts)
+    python -m clipfarm.cli reset-posts                      (un-approve everything not yet posted)
 """
 
 from __future__ import annotations
@@ -132,6 +133,43 @@ def cmd_youtube_login(_args) -> None:
     print("Approved clips are now booked for YouTube too (no restart needed).")
 
 
+def cmd_reset_posts(args) -> None:
+    """Approved clips back to review and their booked posts cancelled, so ✅ Post books them again
+    (on every platform connected now). Their Telegram messages get the buttons back."""
+    import time
+
+    from . import messages
+    from .notify import Telegram, TelegramError
+
+    cfg = load_config()
+    db = dbm.Database(cfg.db_path)
+    n = db.clip_counts().get(dbm.APPROVED, 0)
+    if not n:
+        print("No approved clips waiting to be posted.")
+        return
+    if not args.yes and input(f"Put {n} approved clips back to review and cancel their posts? [y/N] ").lower() != "y":
+        return
+    rows = db.reset_approved()
+    print(f"Reset {len(rows)} clips.")
+    tg = Telegram(cfg.telegram_token, cfg.telegram_api_base) if cfg.telegram_enabled else None
+    fixed = 0
+    for row in rows:
+        chat = row["chat_id"] or cfg.telegram_chat_id or cfg.telegram_owner_id
+        if not tg or not row["telegram_message_id"] or not chat:
+            continue
+        clip = db.get_clip(row["id"])
+        try:
+            tg.edit_caption(int(chat), clip["telegram_message_id"],
+                            messages.clip_caption(clip, db.posts_for_clip(clip["id"]), cfg.post_tz),
+                            messages.buttons_as_json(messages.clip_buttons(clip)))
+            fixed += 1
+        except (TelegramError, OSError) as exc:
+            print(f"  clip {clip['id']}: couldn't update its Telegram message ({exc})")
+        time.sleep(1)  # stay under Telegram's edit rate limit
+    if tg:
+        print(f"Updated {fixed} Telegram messages: tap ✅ Post on the ones you want.")
+
+
 def main() -> None:
     sys.stdout.reconfigure(line_buffering=True)  # `> run.log` would otherwise buffer status lines
     setup_logging()
@@ -151,6 +189,10 @@ def main() -> None:
 
     y = sub.add_parser("youtube-login", help="Let ClipFarm upload to your YouTube channel (once)")
     y.set_defaults(func=cmd_youtube_login)
+
+    r = sub.add_parser("reset-posts", help="Approved clips back to review, booked posts cancelled")
+    r.add_argument("-y", "--yes", action="store_true", help="Don't ask for confirmation")
+    r.set_defaults(func=cmd_reset_posts)
 
     c = sub.add_parser("cleanup", help="Delete clips older than the retention window")
     c.set_defaults(func=cmd_cleanup)

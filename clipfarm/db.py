@@ -275,6 +275,23 @@ class Database:
                 (max_attempts, limit),
             ).fetchall()
 
+    def reset_approved(self) -> list[sqlite3.Row]:
+        """Every approved clip back to review, its booked posts cancelled. Returns those clips
+        (with their job's chat_id) so their Telegram messages can get the buttons back."""
+        with self.connect() as con:
+            rows = con.execute(
+                "SELECT clips.*, jobs.chat_id AS chat_id FROM clips JOIN jobs ON jobs.id = clips.job_id "
+                "WHERE clips.status = 'approved' ORDER BY clips.id"
+            ).fetchall()
+            ids = [r["id"] for r in rows]
+            if ids:
+                marks = ",".join("?" * len(ids))
+                con.execute(f"UPDATE posts SET status = 'cancelled' WHERE clip_id IN ({marks}) "
+                            "AND status = 'scheduled'", ids)
+                con.execute(f"UPDATE clips SET status = 'pending_review', decided_at = NULL, decided_by = '' "
+                            f"WHERE id IN ({marks})", ids)
+            return rows
+
     def set_clip_decision(self, clip_id: int, status: str) -> None:
         self.update_clip(clip_id, status=status, decided_at=time.time())
 

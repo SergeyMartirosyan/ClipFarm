@@ -105,6 +105,18 @@ class Telegram:
             if "message is not modified" not in str(exc):
                 raise
 
+    def edit_caption(self, chat_id: int, message_id: int, caption: str, keyboard: dict | None = None) -> None:
+        data = {"chat_id": chat_id, "message_id": message_id, "caption": caption}
+        if keyboard:
+            data["reply_markup"] = json.dumps(keyboard)
+        try:
+            self._call("editMessageCaption", data)
+        except TelegramUnavailable:
+            raise
+        except TelegramError as exc:
+            if "message is not modified" not in str(exc):
+                raise
+
     def send_video(self, chat_id: int, path: Path, caption: str, keyboard: dict | None = None) -> int:
         if Path(path).stat().st_size > MAX_UPLOAD_BYTES:
             raise TelegramError(f"{Path(path).name} is over Telegram's 50 MB bot limit")
