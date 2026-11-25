@@ -226,6 +226,8 @@ def check_instagram(cfg) -> None:
         except Exception:
             pass
         how = "via R2 URL" if (cfg.r2_enabled and cfg.r2_public_base_url) else "direct upload"
+        if ig.facebook_token:
+            how += ", EAA token via graph.facebook.com (not auto-renewed: the group is told when it expires)"
         report("OK", "Instagram", f"{detail}, {how}")
     except Exception as exc:
         report("FAIL", "Instagram", str(exc)[:250])

@@ -119,6 +119,10 @@ a Meta app with "API setup with Instagram login", your account added and a token
 (`INSTAGRAM_ACCESS_TOKEN`). The video is uploaded straight from the VM (resumable upload); with
 Cloudflare R2 and a public bucket URL set, Instagram fetches it from R2 instead. The token is
 refreshed automatically before it expires. `clipfarm.check` shows the account and today's quota.
+The dashboard's newer "API setup with Unified login" hands out an **EAA…** token instead: that
+works too (via graph.facebook.com) with the account id from the same page in `INSTAGRAM_USER_ID`.
+EAA tokens aren't renewed automatically; the poster checks it every 6 h and says in the group when
+it needs regenerating.
 
 **YouTube Shorts** (YouTube Data API): a Google Cloud project with the YouTube Data API v3 enabled,
 an OAuth client of type *Desktop app* saved as `data/youtube_client.json`, and your Google account

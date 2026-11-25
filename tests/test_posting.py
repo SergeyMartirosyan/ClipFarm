@@ -136,13 +136,18 @@ class Graph:
         self.fail = fail or {}
 
     def __call__(self, req: httpx.Request):
-        path = req.url.path
+        import re
+
+        path = re.sub(r"^/v\d+\.\d+", "", req.url.path)
+        self.hosts = getattr(self, "hosts", set()) | {req.url.host}
         params = dict(req.url.params) if req.method == "GET" else dict(httpx.QueryParams(req.content.decode()))
         self.calls.append((req.method, path, params))
         if path in self.fail:
             return httpx.Response(400, json={"error": self.fail[path]})
         if path == "/me":
             return httpx.Response(200, json={"user_id": "1789", "username": "sergey"})
+        if path == "/1789" and params.get("fields") == "id,username":
+            return httpx.Response(200, json={"id": "1789", "username": "los.clipos"})
         if req.url.host == "rupload.facebook.com":
             self.uploaded = (dict(req.headers), req.content)
             return httpx.Response(200, json={"success": True})
@@ -431,3 +436,26 @@ def test_reset_posts_command_updates_telegram(tmp_path, monkeypatch):
     cli.cmd_reset_posts(SimpleNamespace(yes=True))
     assert edits[0][:2] == (-100, 55) and edits[0][2]["inline_keyboard"][0][0]["callback_data"] == f"ok:{cid}"
     assert d.get_clip(cid)["status"] == dbm.PENDING_REVIEW
+
+
+def test_facebook_style_token_uses_graph_facebook(tmp_path):
+    g = Graph()
+    cfg = _cfg(tmp_path, instagram_access_token="EAAUv4-token", instagram_user_id="1789")
+    ig = Instagram(cfg, dbm.Database(cfg.db_path), http=httpx.Client(transport=httpx.MockTransport(g)),
+                   sleep=lambda s: None)
+    assert ig.me() == {"user_id": "1789", "username": "los.clipos"}
+    video = tmp_path / "c.mp4"
+    video.write_bytes(b"xx")
+    assert ig.publish_reel_file(video, "caption")[0] == "M9"
+    assert g.hosts == {"graph.facebook.com", "rupload.facebook.com"}
+    assert ig.maybe_refresh() is False  # checked, not refreshed
+    assert not any(c[1] == "/refresh_access_token" for c in g.calls)
+
+
+def test_facebook_style_token_without_user_id_explains(tmp_path):
+    g = Graph()
+    cfg = _cfg(tmp_path, instagram_access_token="EAAUv4-token")
+    ig = Instagram(cfg, dbm.Database(cfg.db_path), http=httpx.Client(transport=httpx.MockTransport(g)))
+    with pytest.raises(InstagramError, match="INSTAGRAM_USER_ID") as e:
+        ig.me()
+    assert not e.value.transient

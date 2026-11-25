@@ -92,6 +92,8 @@ class Config:
     # Posting
     instagram_access_token: str
     instagram_api_base: str
+    instagram_fb_api_base: str
+    instagram_user_id: str
     youtube_client_path: Path
     youtube_privacy: str
     youtube_category: str
@@ -191,6 +193,8 @@ def load_config(env_file: str | None = None) -> Config:
         presets_path=Path(_str("PRESETS_PATH", "./presets.json")).resolve(),
         instagram_access_token=_str("INSTAGRAM_ACCESS_TOKEN"),
         instagram_api_base=_str("INSTAGRAM_API_BASE", "https://graph.instagram.com"),
+        instagram_fb_api_base=_str("INSTAGRAM_FB_API_BASE", "https://graph.facebook.com/v21.0"),
+        instagram_user_id=_str("INSTAGRAM_USER_ID"),
         youtube_client_path=Path(_str("YOUTUBE_CLIENT_FILE", str(data_dir / "youtube_client.json"))).resolve(),
         youtube_privacy=_str("YOUTUBE_PRIVACY", "public"),
         youtube_category=_str("YOUTUBE_CATEGORY", "20"),

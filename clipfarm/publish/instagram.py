@@ -5,6 +5,12 @@ publish it, then read back the permalink. The video goes either straight from th
 (resumable upload to rupload.facebook.com, no extra service needed) or, when Cloudflare R2 is set
 up, as a public URL Instagram downloads itself.
 
+Two kinds of token work. IGAA... (Instagram Login) talks to graph.instagram.com. EAA... (what the
+dashboard's "API setup with Unified login" / Facebook Login gives) talks to graph.facebook.com and
+needs the Instagram account id in INSTAGRAM_USER_ID (shown under the account on that page); the
+posting calls are the same. EAA tokens can't be refreshed without the app secret, so they are only
+checked, and an expired one is reported in the group.
+
 Access token: a long-lived token (60 days) generated in the Meta App Dashboard goes in .env as
 INSTAGRAM_ACCESS_TOKEN. It is refreshed automatically (refresh_access_token) once it is older
 than REFRESH_AFTER and kept in the database; regenerating it in the dashboard and putting the new
@@ -59,13 +65,20 @@ class Instagram:
     def __init__(self, cfg, db, http: httpx.Client | None = None, sleep=time.sleep, clock=time.time):
         self.cfg = cfg
         self.db = db
-        self.base = cfg.instagram_api_base.rstrip("/")
         self.http = http or httpx.Client(timeout=httpx.Timeout(60.0))
         self._sleep = sleep
         self._clock = clock
         self._user_id: str | None = None
 
     # -- token ------------------------------------------------------------------------------
+
+    @property
+    def facebook_token(self) -> bool:
+        return self.token.startswith("EAA")
+
+    @property
+    def base(self) -> str:
+        return (self.cfg.instagram_fb_api_base if self.facebook_token else self.cfg.instagram_api_base).rstrip("/")
 
     def _env_fingerprint(self) -> str:
         return hashlib.sha256(self.cfg.instagram_access_token.encode()).hexdigest()[:16]
@@ -80,8 +93,12 @@ class Instagram:
         return self.db.kv_get("instagram_token") or self.cfg.instagram_access_token
 
     def maybe_refresh(self) -> bool:
-        """Refresh the long-lived token when it is older than REFRESH_AFTER. True if refreshed."""
+        """Refresh the long-lived token when it is older than REFRESH_AFTER. True if refreshed.
+        EAA tokens can't be refreshed this way: just check they still work (raises if not)."""
         token = self.token
+        if self.facebook_token:
+            self.me()
+            return False
         age = self._clock() - float(self.db.kv_get("instagram_token_at") or 0)
         if age < REFRESH_AFTER:
             return False
@@ -121,12 +138,35 @@ class Instagram:
     # -- API --------------------------------------------------------------------------------
 
     def me(self) -> dict:
-        return self._request("GET", f"{self.base}/me", {"fields": "user_id,username"})
+        if not self.facebook_token:
+            return self._request("GET", f"{self.base}/me", {"fields": "user_id,username"})
+        data = self._request("GET", f"{self.base}/{self.user_id()}", {"fields": "id,username"})
+        return {"user_id": data.get("id"), "username": data.get("username")}
 
     def user_id(self) -> str:
         if self._user_id is None:
-            self._user_id = str(self.me()["user_id"])
+            if self.cfg.instagram_user_id:
+                self._user_id = self.cfg.instagram_user_id.strip()
+            elif self.facebook_token:
+                self._user_id = self._find_account()
+            else:
+                self._user_id = str(self.me()["user_id"])
         return self._user_id
+
+    def _find_account(self) -> str:
+        """EAA token without INSTAGRAM_USER_ID: the Instagram account linked to the token's Pages."""
+        try:
+            pages = self._request("GET", f"{self.base}/me/accounts",
+                                  {"fields": "instagram_business_account{id,username}"}).get("data") or []
+        except InstagramError:
+            pages = []
+        for page in pages:
+            acc = page.get("instagram_business_account") or {}
+            if acc.get("id"):
+                return str(acc["id"])
+        raise InstagramError("This token starts with EAA: put the Instagram account id in .env as "
+                             "INSTAGRAM_USER_ID (the number under the account in the Meta dashboard)",
+                             transient=False)
 
     def publishing_limit(self) -> dict:
         data = self._request("GET", f"{self.base}/{self.user_id()}/content_publishing_limit",
