@@ -113,10 +113,16 @@ def cmd_youtube_login(_args) -> None:
     print(yt.auth_url(client[0], login))
     print("\n2. After you allow access, the browser ends on a page that doesn't load (127.0.0.1:8765).")
     print("   That's expected. Copy the WHOLE address from the address bar and paste it here.\n")
-    pasted = input("Address: ")
+    for tries in range(3):
+        try:
+            code = yt.code_from_paste(input("Address: "), login["state"])
+            break
+        except PublishError as exc:
+            print(f"  {exc}")
+    else:
+        sys.exit("Run the command again when you have the address.")
     try:
         with httpx.Client(timeout=60) as http:
-            code = yt.code_from_paste(pasted, login["state"])
             token = yt.exchange_code(http, client, code, login["verifier"])
             yt.save_token(cfg.youtube_token_path, token)
             channel = yt.YouTube(cfg, http=http).channel()

@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import time
 from pathlib import Path
@@ -75,9 +76,10 @@ def code_from_paste(pasted: str, state: str) -> str:
     """The pasted address (http://127.0.0.1:8765/?state=...&code=...) or just the code."""
     pasted = pasted.strip()
     if "code=" not in pasted and "error=" not in pasted:
-        if len(pasted) > 20 and " " not in pasted and "://" not in pasted:
-            return pasted  # only the code
-        raise PublishError("That doesn't look like the address with ?code= in it", transient=False)
+        if re.fullmatch(r"\d/[\w-]{20,}", pasted):
+            return pasted  # only the code (Google's codes look like 4/0AUn6...)
+        raise PublishError("That isn't the address. It starts with http://127.0.0.1:8765/?state=... "
+                           "and has code= in it", transient=False)
     q = parse_qs(urlparse(pasted).query if "?" in pasted else pasted)
     if q.get("error"):
         raise PublishError(f"Google said: {q['error'][0]}", transient=False)

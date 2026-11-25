@@ -127,8 +127,10 @@ def test_login_helpers(tmp_path):
         yt.code_from_paste("http://127.0.0.1:8765/?state=old&code=CODE", login["state"])
     with pytest.raises(PublishError, match="access_denied"):
         yt.code_from_paste("http://127.0.0.1:8765/?error=access_denied", login["state"])
-    with pytest.raises(PublishError):
-        yt.code_from_paste("hello", login["state"])
+    for bad in ("hello", "someone.support@gmail.com"):
+        with pytest.raises(PublishError, match="isn't the address"):
+            yt.code_from_paste(bad, login["state"])
+    assert yt.code_from_paste("4/0AUn6Hd9ELOjHm-Y-xvssadGE15tD7dzn", login["state"]).startswith("4/")
     with httpx.Client(transport=httpx.MockTransport(Google())) as http:
         token = yt.exchange_code(http, ("cid", "sec"), "CODE", login["verifier"])
     path = tmp_path / "tok.json"
