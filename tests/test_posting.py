@@ -459,3 +459,38 @@ def test_facebook_style_token_without_user_id_explains(tmp_path):
     with pytest.raises(InstagramError, match="INSTAGRAM_USER_ID") as e:
         ig.me()
     assert not e.value.transient
+
+
+def test_upload_error_keeps_metas_whole_answer(tmp_path):
+    g = Graph()
+    real = g.__call__
+
+    def handler(req):
+        if req.url.host == "rupload.facebook.com":
+            return httpx.Response(400, json={"debug_info": {"type": "ProcessingFailedError",
+                                                            "message": "Request processing failed"}})
+        return real(req)
+
+    cfg = _cfg(tmp_path)
+    ig = Instagram(cfg, dbm.Database(cfg.db_path), http=httpx.Client(transport=httpx.MockTransport(handler)))
+    video = tmp_path / "c.mp4"
+    video.write_bytes(b"xx")
+    with pytest.raises(InstagramError) as e:
+        ig.publish_reel_file(video, "c")
+    assert "ProcessingFailedError" in str(e.value) and "HTTP 400" in str(e.value)
+    assert "rupload.facebook.com/ig-api-upload/v99.0/<container>" in str(e.value) and "IGAAT" not in str(e.value)
+
+
+def test_retry_failed_posts_now(tmp_path, monkeypatch):
+    from clipfarm import cli
+    from clipfarm import poster as poster_mod
+
+    pub = FakePublisher(InstagramError("refused", transient=False))
+    p, d, cid, tg, _, t = _poster(tmp_path, pub)
+    p.tick()
+    assert [r["clip_id"] for r in d.failed_posts("instagram")] == [cid] and d.failed_posts("youtube") == []
+    pub.error = None
+    monkeypatch.setattr(poster_mod, "Poster", lambda: p)
+    cli.cmd_retry_failed(SimpleNamespace(platform="instagram", first=True))
+    post = d.posts_for_clip(cid)[0]
+    assert post["status"] == dbm.POST_POSTED and post["attempts"] == 0 and d.failed_posts() == []

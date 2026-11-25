@@ -5,6 +5,7 @@
     python -m clipfarm.cli section <url> 6:00:00-6:01:00   (download test, nothing else)
     python -m clipfarm.cli youtube-login                    (once, to let ClipFarm upload Shorts)
     python -m clipfarm.cli reset-posts                      (un-approve everything not yet posted)
+    python -m clipfarm.cli retry-failed [--platform instagram]   (post failed ones again, right now)
 """
 
 from __future__ import annotations
@@ -170,6 +171,29 @@ def cmd_reset_posts(args) -> None:
         print(f"Updated {fixed} Telegram messages: tap ✅ Post on the ones you want.")
 
 
+def cmd_retry_failed(args) -> None:
+    """Post every failed post again now, one by one, printing the outcome (and the group is told)."""
+    import time
+
+    from .poster import Poster
+
+    poster = Poster()
+    rows = poster.db.failed_posts(args.platform)
+    if not rows:
+        print("No failed posts" + (f" for {args.platform}" if args.platform else "") + ".")
+        return
+    if args.first:
+        rows = rows[:1]
+    for row in rows:
+        poster.db.update_post(row["id"], status=dbm.POST_SCHEDULED, attempts=0, scheduled_at=time.time(),
+                              next_try_at=None, error=None)
+        fresh = next(p for p in poster.db.posts_for_clip(row["clip_id"]) if p["id"] == row["id"])
+        poster.post(fresh)
+        after = next(p for p in poster.db.posts_for_clip(row["clip_id"]) if p["id"] == row["id"])
+        print(f"clip {row['clip_id']} -> {row['platform']}: {after['status']}"
+              + (f" {after['url']}" if after["url"] else "") + (f"\n  {after['error']}" if after["error"] else ""))
+
+
 def main() -> None:
     sys.stdout.reconfigure(line_buffering=True)  # `> run.log` would otherwise buffer status lines
     setup_logging()
@@ -193,6 +217,11 @@ def main() -> None:
     r = sub.add_parser("reset-posts", help="Approved clips back to review, booked posts cancelled")
     r.add_argument("-y", "--yes", action="store_true", help="Don't ask for confirmation")
     r.set_defaults(func=cmd_reset_posts)
+
+    f = sub.add_parser("retry-failed", help="Post failed posts again right now")
+    f.add_argument("--platform", choices=["instagram", "youtube"])
+    f.add_argument("--first", action="store_true", help="Only the oldest one (a quick test)")
+    f.set_defaults(func=cmd_retry_failed)
 
     c = sub.add_parser("cleanup", help="Delete clips older than the retention window")
     c.set_defaults(func=cmd_cleanup)

@@ -328,6 +328,16 @@ class Database:
                 "UPDATE posts SET status = 'cancelled' WHERE clip_id = ? AND status = 'scheduled'", (clip_id,)
             ).rowcount
 
+    def failed_posts(self, platform: str | None = None) -> list[sqlite3.Row]:
+        """Failed posts of clips that are still approved, oldest first."""
+        with self.connect() as con:
+            return con.execute(
+                "SELECT posts.* FROM posts JOIN clips ON clips.id = posts.clip_id "
+                "WHERE posts.status = 'failed' AND clips.status IN ('approved', 'posted') "
+                "AND (? IS NULL OR posts.platform = ?) ORDER BY posts.id",
+                (platform, platform),
+            ).fetchall()
+
     def taken_slots(self, platform: str, since: float) -> list[float]:
         with self.connect() as con:
             rows = con.execute(

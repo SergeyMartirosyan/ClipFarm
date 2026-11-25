@@ -212,9 +212,11 @@ class Instagram:
         except ValueError:
             result = {}
         if resp.status_code >= 400 or (isinstance(result, dict) and result.get("error")):
-            err = (result.get("error") or result.get("debug_info") or {}) if isinstance(result, dict) else {}
-            msg = err.get("message") if isinstance(err, dict) else str(err)
-            raise InstagramError(f"Instagram refused the upload: {msg or resp.status_code}",
+            # Keep Meta's whole answer: its short message ("Request processing failed") says little.
+            raw = " ".join(resp.text.split())[:400] if resp.text else "(empty)"
+            where = uri.split("?")[0].replace(container, "<container>")
+            log.warning("Instagram upload to %s failed: HTTP %s %s", where, resp.status_code, raw)
+            raise InstagramError(f"Instagram refused the upload (HTTP {resp.status_code} from {where}): {raw}",
                                  transient=resp.status_code >= 500)
         return self._finish(container)
 
