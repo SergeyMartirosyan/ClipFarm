@@ -27,7 +27,7 @@ MAX_ATTEMPTS = 4
 RETRY_BASE = 300          # 5 min, doubling: 5, 10, 20 min
 TICK = 30
 MAINTENANCE_EVERY = 6 * 3600
-NAMES = {"instagram": "Instagram", "youtube": "YouTube"}
+NAMES = {"instagram": "Instagram", "youtube": "YouTube", "tiktok": "TikTok"}
 LOGIN_WARN_EVERY = 12 * 3600
 
 
@@ -61,6 +61,10 @@ class Poster:
                 from .publish.youtube import YouTube
 
                 self.publishers[platform] = YouTube(self.cfg, self.db)
+            elif platform == "tiktok" and self.cfg.tiktok_client_key and self.cfg.tiktok_token_path.exists():
+                from .publish.tiktok import TikTok
+
+                self.publishers[platform] = TikTok(self.cfg, self.db)
         return self.publishers.get(platform)
 
     def public_url(self, clip) -> str:

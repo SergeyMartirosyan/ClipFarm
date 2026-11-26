@@ -233,6 +233,24 @@ def check_instagram(cfg) -> None:
         report("FAIL", "Instagram", str(exc)[:250])
 
 
+def check_tiktok(cfg) -> None:
+    if not cfg.tiktok_client_key:
+        report("WARN", "TikTok", "TIKTOK_CLIENT_KEY not set: no TikTok posting")
+        return
+    if not cfg.tiktok_token_path.exists():
+        report("WARN", "TikTok", "not logged in: run `.venv/bin/python -m clipfarm.cli tiktok-login`")
+        return
+    try:
+        from .publish.tiktok import TikTok
+
+        info = TikTok(cfg).creator()
+        mode = "drafts to the app inbox" if cfg.tiktok_mode != "direct" else f"direct, {cfg.tiktok_privacy}"
+        report("OK", "TikTok", f"@{info.get('creator_username')}, {mode}; allowed: "
+               + ", ".join(info.get("privacy_level_options") or []))
+    except Exception as exc:
+        report("FAIL", "TikTok", str(exc)[:250])
+
+
 def check_cover(cfg) -> None:
     from pathlib import Path
 
@@ -322,6 +340,7 @@ def main() -> None:
     check_r2(cfg)
     check_instagram(cfg)
     check_youtube(cfg)
+    check_tiktok(cfg)
     check_cover(cfg)
     check_youtube_cookies(cfg)
     fails = [r for r in results if r[0] == "FAIL"]

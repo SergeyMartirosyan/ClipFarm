@@ -95,6 +95,11 @@ class Config:
     instagram_fb_api_base: str
     instagram_user_id: str
     youtube_client_path: Path
+    tiktok_client_key: str
+    tiktok_client_secret: str
+    tiktok_redirect_uri: str
+    tiktok_mode: str
+    tiktok_privacy: str
     youtube_privacy: str
     youtube_category: str
     posts_per_day: int
@@ -136,11 +141,18 @@ class Config:
         return self.data_dir / "youtube_token.json"
 
     @property
+    def tiktok_token_path(self) -> Path:
+        """Written by `clipfarm.cli tiktok-login`."""
+        return self.data_dir / "tiktok_token.json"
+
+    @property
     def post_platforms(self) -> list[str]:
         """Platforms ClipFarm can post to: Instagram with a token in .env, YouTube once logged in."""
         out = ["instagram"] if self.instagram_access_token else []
         if self.youtube_token_path.exists():
             out.append("youtube")
+        if self.tiktok_client_key and self.tiktok_token_path.exists():
+            out.append("tiktok")
         return out
 
     @property
@@ -197,6 +209,11 @@ def load_config(env_file: str | None = None) -> Config:
         instagram_api_base=_str("INSTAGRAM_API_BASE", "https://graph.instagram.com"),
         instagram_fb_api_base=_str("INSTAGRAM_FB_API_BASE", "https://graph.facebook.com/v21.0"),
         instagram_user_id=_str("INSTAGRAM_USER_ID"),
+        tiktok_client_key=_str("TIKTOK_CLIENT_KEY"),
+        tiktok_client_secret=_str("TIKTOK_CLIENT_SECRET"),
+        tiktok_redirect_uri=_str("TIKTOK_REDIRECT_URI", "https://losclipos.sergeymartirosyan7438.workers.dev/tiktok-callback"),
+        tiktok_mode=_str("TIKTOK_MODE", "draft"),
+        tiktok_privacy=_str("TIKTOK_PRIVACY", "SELF_ONLY"),
         youtube_client_path=Path(_str("YOUTUBE_CLIENT_FILE", str(data_dir / "youtube_client.json"))).resolve(),
         youtube_privacy=_str("YOUTUBE_PRIVACY", "public"),
         youtube_category=_str("YOUTUBE_CATEGORY", "20"),

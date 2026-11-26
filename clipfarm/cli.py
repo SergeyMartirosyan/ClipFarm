@@ -7,6 +7,7 @@
     python -m clipfarm.cli reset-posts                      (un-approve everything not yet posted)
     python -m clipfarm.cli retry-failed [--platform instagram]   (post failed ones again, right now)
     python -m clipfarm.cli make-cover <image>               (the cover used for every clip)
+    python -m clipfarm.cli tiktok-login                     (once, to let ClipFarm post to TikTok)
 """
 
 from __future__ import annotations
@@ -221,6 +222,40 @@ def cmd_make_cover(args) -> None:
           "COVER_IMAGE_URL in .env.")
 
 
+def cmd_tiktok_login(_args) -> None:
+    import httpx
+
+    from .publish import PublishError
+    from .publish import tiktok as tt
+
+    cfg = load_config()
+    if not (cfg.tiktok_client_key and cfg.tiktok_client_secret):
+        sys.exit("Put TIKTOK_CLIENT_KEY and TIKTOK_CLIENT_SECRET (from developers.tiktok.com) in .env first.")
+    state = tt.new_state()
+    print("1. Open this link in your browser and log in with the TikTok account to post to:\n")
+    print(tt.auth_url(cfg, state))
+    print(f"\n2. After you allow access you land on {cfg.tiktok_redirect_uri}.")
+    print("   Tap Copy there (or copy the whole address bar) and paste it here.\n")
+    for _ in range(3):
+        try:
+            code = tt.code_from_paste(input("Address: "), state)
+            break
+        except PublishError as exc:
+            print(f"  {exc}")
+    else:
+        sys.exit("Run the command again when you have the address.")
+    try:
+        with httpx.Client(timeout=60) as http:
+            tt.save_token(cfg.tiktok_token_path, tt.exchange_code(http, cfg, code))
+            info = tt.TikTok(cfg, http=http).creator()
+    except PublishError as exc:
+        sys.exit(f"Login failed: {exc}")
+    mode = ("as drafts in the TikTok app inbox" if cfg.tiktok_mode != "direct"
+            else f"directly, as {cfg.tiktok_privacy}")
+    print(f"\nLogged in as @{info.get('creator_username', '?')}. Approved clips go to TikTok {mode}.")
+    print("Allowed privacy for this account: " + ", ".join(info.get("privacy_level_options") or ["?"]))
+
+
 def main() -> None:
     sys.stdout.reconfigure(line_buffering=True)  # `> run.log` would otherwise buffer status lines
     setup_logging()
@@ -246,13 +281,16 @@ def main() -> None:
     r.set_defaults(func=cmd_reset_posts)
 
     f = sub.add_parser("retry-failed", help="Post failed posts again right now")
-    f.add_argument("--platform", choices=["instagram", "youtube"])
+    f.add_argument("--platform", choices=["instagram", "youtube", "tiktok"])
     f.add_argument("--first", action="store_true", help="Only the oldest one (a quick test)")
     f.set_defaults(func=cmd_retry_failed)
 
     m = sub.add_parser("make-cover", help="Make the cover image used for every clip")
     m.add_argument("image")
     m.set_defaults(func=cmd_make_cover)
+
+    tk = sub.add_parser("tiktok-login", help="Let ClipFarm post to your TikTok account (once)")
+    tk.set_defaults(func=cmd_tiktok_login)
 
     c = sub.add_parser("cleanup", help="Delete clips older than the retention window")
     c.set_defaults(func=cmd_cleanup)

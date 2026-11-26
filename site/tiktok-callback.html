@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>ClipFarm · TikTok login</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    textarea { width: 100%; min-height: 120px; padding: 12px; font: 14px/1.4 ui-monospace, Menlo, monospace;
+               color: var(--fg); background: transparent; border: 1px solid var(--line); border-radius: 8px; }
+    button { margin-top: 12px; padding: 10px 18px; font: inherit; border: 0; border-radius: 8px;
+             background: var(--accent); color: var(--bg); cursor: pointer; }
+    .error { color: #d93025; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>TikTok login</h1>
+  <p id="lead" class="muted">Loading…</p>
+  <textarea id="addr" readonly hidden></textarea>
+  <button id="copy" hidden>Copy</button>
+  <p id="done" class="muted" hidden>Copied. Paste it into the terminal where <code>tiktok-login</code> is waiting.</p>
+  <footer>ClipFarm · <a href="privacy.html">Privacy Policy</a> · <a href="terms.html">Terms of Service</a></footer>
+</main>
+<script>
+  // TikTok sends the browser here with ?code=...&state=... The page only shows the address so it
+  // can be pasted into ClipFarm's terminal login; nothing is sent anywhere from this page.
+  const q = new URLSearchParams(location.search);
+  const lead = document.getElementById("lead");
+  const addr = document.getElementById("addr");
+  const copy = document.getElementById("copy");
+  if (q.get("code")) {
+    lead.textContent = "Login worked. Copy this whole address and paste it into the terminal:";
+    addr.value = location.href;
+    addr.hidden = false;
+    copy.hidden = false;
+    copy.onclick = async () => {
+      try { await navigator.clipboard.writeText(addr.value); } catch (e) { addr.select(); document.execCommand("copy"); }
+      document.getElementById("done").hidden = false;
+    };
+  } else if (q.get("error")) {
+    lead.textContent = "TikTok said: " + (q.get("error_description") || q.get("error"));
+    lead.className = "error";
+  } else {
+    lead.textContent = "This page is where TikTok sends you back after you allow ClipFarm to post. Start from the tiktok-login command.";
+  }
+</script>
+</body>
+</html>

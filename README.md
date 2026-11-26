@@ -24,7 +24,7 @@ Telegram link ─► yt-dlp ─► transcript ─► signals + LLM judge ─► 
 | 6a. Posting scheduler (slots per day, poster service, Telegram reports, /schedule) | ✅ |
 | 6b. Instagram Reels (Instagram Login, direct upload or R2 URL, auto token refresh) | ✅ |
 | 6c. YouTube Shorts (OAuth Desktop client, resumable upload) | ✅ |
-| 6d. TikTok | ⏳ |
+| 6d. TikTok (Content Posting API: drafts to the app inbox, or direct posts) | ✅ |
 | 7. VM setup script, systemd services, self-check | ✅ |
 | Twitch signals: viewer clips (Helix API) + chat replay bursts and emotes | ✅ |
 | Gemini watches frames of the top 20 candidates and ranks them against each other | ✅ |
@@ -140,6 +140,14 @@ it went up as Private. While the OAuth app is in *Testing* mode, Google ends the
 the poster notices and asks in the group for `youtube-login` again. A daily-quota error is retried
 after 6 hours.
 
+**TikTok** (Content Posting API): an app on developers.tiktok.com with Login Kit (redirect URI
+`TIKTOK_REDIRECT_URI`, the `site/tiktok-callback.html` page) and the Content Posting API, scopes
+`user.info.basic,video.upload,video.publish`, keys in `TIKTOK_CLIENT_KEY` / `TIKTOK_CLIENT_SECRET`.
+Log in once with `.venv/bin/python -m clipfarm.cli tiktok-login`. Until TikTok audits the app it only
+allows private posts, so `TIKTOK_MODE=draft` (default) sends each clip to the TikTok app's inbox to
+post with a tap; `TIKTOK_MODE=direct` posts with `TIKTOK_PRIVACY`. TikTok's API has no custom cover
+image, only a frame.
+
 ## Friends and a group chat
 
 - `TELEGRAM_ALLOWED_USERS=222,333`: friends' numeric ids (from @userinfobot) who may send links and
@@ -215,7 +223,8 @@ clipfarm/
 ├── publish/
 │   ├── schedule.py    posting slots
 │   ├── instagram.py   Instagram Reels client
-│   └── youtube.py     YouTube Shorts client + login
+│   ├── youtube.py     YouTube Shorts client + login
+│   └── tiktok.py      TikTok client + login
 └── pipeline/
     ├── run.py         orchestrates one link end to end
     ├── download.py    yt-dlp: video, heatmap, English subtitles
