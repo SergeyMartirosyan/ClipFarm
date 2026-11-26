@@ -233,6 +233,29 @@ def check_instagram(cfg) -> None:
         report("FAIL", "Instagram", str(exc)[:250])
 
 
+def check_cover(cfg) -> None:
+    from pathlib import Path
+
+    if Path(cfg.cover_image).exists():
+        report("OK", "Cover image", f"{cfg.cover_image} (YouTube thumbnail)")
+    else:
+        report("WARN", "Cover image", "none: clips use a frame from the video (make-cover sets one)")
+    if not cfg.cover_image_url:
+        return
+    try:
+        import httpx
+
+        resp = httpx.get(cfg.cover_image_url, follow_redirects=True, timeout=30)
+        kind = resp.headers.get("content-type", "")
+        if resp.status_code == 200 and kind.startswith("image/"):
+            report("OK", "Instagram cover link", f"{cfg.cover_image_url} ({len(resp.content) // 1024} KB, {kind})")
+        else:
+            report("FAIL", "Instagram cover link", f"{cfg.cover_image_url} gave HTTP {resp.status_code} {kind}: "
+                   "Instagram posts would fail. Fix the link or empty COVER_IMAGE_URL")
+    except Exception as exc:
+        report("FAIL", "Instagram cover link", f"{cfg.cover_image_url}: {exc.__class__.__name__}")
+
+
 def check_youtube(cfg) -> None:
     if not cfg.youtube_client_path.exists():
         report("WARN", "YouTube", f"no OAuth client file at {cfg.youtube_client_path}: no YouTube posting")
@@ -299,6 +322,7 @@ def main() -> None:
     check_r2(cfg)
     check_instagram(cfg)
     check_youtube(cfg)
+    check_cover(cfg)
     check_youtube_cookies(cfg)
     fails = [r for r in results if r[0] == "FAIL"]
     print()
