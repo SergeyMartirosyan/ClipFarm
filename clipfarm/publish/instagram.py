@@ -220,7 +220,9 @@ class Instagram:
 
     def _container_params(self, caption: str, cover_offset: float | None) -> dict:
         params = {"media_type": "REELS", "caption": caption, "share_to_feed": "true"}
-        if cover_offset is not None:
+        if self.cfg.cover_image_url:
+            params["cover_url"] = self.cfg.cover_image_url  # the fixed cover wins over a video frame
+        elif cover_offset is not None:
             params["thumb_offset"] = str(int(cover_offset * 1000))
         return params
 

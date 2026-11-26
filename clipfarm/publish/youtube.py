@@ -33,6 +33,7 @@ AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 API = "https://www.googleapis.com/youtube/v3"
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
+THUMBNAIL_URL = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set"
 SCOPES = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly"
 REDIRECT_URI = "http://127.0.0.1:8765/"
 TITLE_LIMIT = 100
@@ -247,4 +248,22 @@ class YouTube:
         if got != privacy:
             note = (f"⚠️ YouTube put it up as {got.capitalize()}, not {privacy.capitalize()}: Google locks uploads "
                     "from unaudited API apps. Publish it by hand in YouTube Studio until the app passes the audit.")
+        thumb_note = self.set_thumbnail(vid)
+        note = "\n".join(n for n in (note, thumb_note) if n)
         return Published(id=vid, url=f"https://youtube.com/shorts/{vid}", note=note, extra={"privacy": got})
+
+    def set_thumbnail(self, video_id: str) -> str:
+        """The fixed cover image as the video's thumbnail. Never fails the post: returns a note."""
+        path = Path(self.cfg.cover_image)
+        if not path.exists():
+            return ""
+        try:
+            self._call("POST", THUMBNAIL_URL, params={"videoId": video_id}, content=path.read_bytes(),
+                       headers={"Content-Type": "image/jpeg"})
+            return ""
+        except PublishError as exc:
+            log.warning("YouTube thumbnail for %s failed: %s", video_id, exc)
+            if exc.code == 403:
+                return ("⚠️ Video is up, but YouTube refused the custom thumbnail. Usually the channel isn't "
+                        f"verified yet (youtube.com/verify, a phone number). YouTube said: {exc}")
+            return f"⚠️ Video is up, but the thumbnail failed: {exc}"

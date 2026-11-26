@@ -556,3 +556,12 @@ def test_retry_of_an_already_published_container_posts_nothing_new(tmp_path):
     assert ig.publish(_ig_item(tmp_path)).url == "https://www.instagram.com/reel/abc/"
     assert not any(c[1] in ("/1789/media_publish",) for c in g.calls)
     assert not any(c[1] == "/1789/media" and c[0] == "POST" for c in g.calls)
+
+
+def test_reel_uses_the_fixed_cover_link_when_set(tmp_path):
+    g = Graph()
+    ig, _, _ = _ig(tmp_path, g)
+    ig.cfg = dataclasses.replace(ig.cfg, cover_image_url="https://site.example/cover.jpg")
+    ig.publish_reel("https://pub-x.r2.dev/a.mp4", "c", cover_offset=7.5)
+    container = [c for c in g.calls if c[1] == "/1789/media"][0][2]
+    assert container["cover_url"] == "https://site.example/cover.jpg" and "thumb_offset" not in container

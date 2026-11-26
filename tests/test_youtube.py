@@ -45,6 +45,12 @@ class Google:
             assert req.headers["x-upload-content-type"] == "video/mp4"
             self.meta = json.loads(req.content)
             return httpx.Response(200, headers={"Location": "https://www.googleapis.com/upload/session/42"})
+        if req.url.path == "/upload/youtube/v3/thumbnails/set":
+            self.thumb = (dict(req.url.params), req.headers["content-type"], req.content)
+            if getattr(self, "thumb_error", None):
+                return httpx.Response(403, json={"error": {"message": "no custom thumbnails",
+                                                           "errors": [{"reason": "forbidden"}]}})
+            return httpx.Response(200, json={"items": []})
         if req.url.path == "/upload/session/42":
             self.body = req.content
             return httpx.Response(200, json={"id": "vid123", "status": {"privacyStatus": self.privacy}})
@@ -145,3 +151,39 @@ def test_poster_builds_youtube_after_login(tmp_path):
     client, cfg = _yt(tmp_path, Google(), instagram_access_token="")
     p = Poster(cfg=cfg, tg=FakeTg())
     assert isinstance(p.publisher("youtube"), yt.YouTube) and p.publisher("instagram") is None
+
+
+def test_fixed_cover_becomes_the_thumbnail(tmp_path):
+    g = Google()
+    client, cfg = _yt(tmp_path, g)
+    assert client.publish(_item(tmp_path)).note == "" and not hasattr(g, "thumb")  # no cover: nothing sent
+    cfg.cover_image.write_bytes(b"JPEG")
+    assert client.publish(_item(tmp_path)).note == ""
+    assert g.thumb == ({"videoId": "vid123"}, "image/jpeg", b"JPEG")
+
+
+def test_refused_thumbnail_does_not_fail_the_post(tmp_path):
+    g = Google()
+    g.thumb_error = True
+    client, cfg = _yt(tmp_path, g)
+    cfg.cover_image.write_bytes(b"JPEG")
+    done = client.publish(_item(tmp_path))
+    assert done.id == "vid123" and "youtube.com/verify" in done.note
+
+
+@pytest.mark.skipif(__import__("shutil").which("ffmpeg") is None, reason="ffmpeg missing")
+def test_make_cover(tmp_path, monkeypatch):
+    import subprocess
+    from types import SimpleNamespace
+
+    from clipfarm import cli
+    from clipfarm.media import probe
+
+    cfg = _cfg(tmp_path)
+    src = tmp_path / "art.jpg"
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=1402x1754", "-frames:v", "1",
+                    str(src)], check=True)
+    monkeypatch.setattr(cli, "load_config", lambda: cfg)
+    cli.cmd_make_cover(SimpleNamespace(image=str(src)))
+    info = probe(cfg.cover_image)
+    assert (info.width, info.height) == (1080, 1920) and cfg.cover_image.stat().st_size < 2_000_000

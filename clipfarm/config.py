@@ -101,6 +101,8 @@ class Config:
     post_window: str
     post_tz: str
     caption_suffix: str
+    cover_image: Path          # one fixed cover for every clip (made by `clipfarm.cli make-cover`)
+    cover_image_url: str       # the same image at a public link: Instagram only takes covers by URL
 
     # R2
     r2_account_id: str
@@ -202,6 +204,8 @@ def load_config(env_file: str | None = None) -> Config:
         post_window=_str("POST_WINDOW", "10:00-23:00"),
         post_tz=_str("POST_TZ", "Asia/Yerevan"),
         caption_suffix=_str("CAPTION_SUFFIX"),
+        cover_image=Path(_str("COVER_IMAGE", str(data_dir / "cover.jpg"))).resolve(),
+        cover_image_url=_str("COVER_IMAGE_URL"),
         r2_account_id=_str("R2_ACCOUNT_ID"),
         r2_access_key_id=_str("R2_ACCESS_KEY_ID"),
         r2_secret_access_key=_str("R2_SECRET_ACCESS_KEY"),

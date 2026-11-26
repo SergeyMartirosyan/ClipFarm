@@ -6,6 +6,7 @@
     python -m clipfarm.cli youtube-login                    (once, to let ClipFarm upload Shorts)
     python -m clipfarm.cli reset-posts                      (un-approve everything not yet posted)
     python -m clipfarm.cli retry-failed [--platform instagram]   (post failed ones again, right now)
+    python -m clipfarm.cli make-cover <image>               (the cover used for every clip)
 """
 
 from __future__ import annotations
@@ -194,6 +195,32 @@ def cmd_retry_failed(args) -> None:
               + (f" {after['url']}" if after["url"] else "") + (f"\n  {after['error']}" if after["error"] else ""))
 
 
+def cmd_make_cover(args) -> None:
+    """Turn any image into the fixed cover: 1080x1920 (9:16) with a blurred fill behind it, JPEG
+    under 2 MB (YouTube's thumbnail limit)."""
+    from pathlib import Path
+
+    from .media import run
+
+    cfg = load_config()
+    src = Path(args.image).expanduser()
+    if not src.exists():
+        sys.exit(f"Not found: {src}")
+    out = cfg.cover_image
+    out.parent.mkdir(parents=True, exist_ok=True)
+    graph = ("[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=30:5[bg];"
+             "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease[fg];"
+             "[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuvj420p")
+    for q in (2, 4, 6, 9, 13):
+        run(["ffmpeg", "-y", "-v", "error", "-i", str(src), "-filter_complex", graph, "-frames:v", "1",
+             "-q:v", str(q), str(out)])
+        if out.stat().st_size < 1_900_000:
+            break
+    print(f"Cover saved: {out} ({out.stat().st_size // 1024} KB, 1080x1920)")
+    print("YouTube uses it from the next upload. For Instagram, put this file at a public link and set "
+          "COVER_IMAGE_URL in .env.")
+
+
 def main() -> None:
     sys.stdout.reconfigure(line_buffering=True)  # `> run.log` would otherwise buffer status lines
     setup_logging()
@@ -222,6 +249,10 @@ def main() -> None:
     f.add_argument("--platform", choices=["instagram", "youtube"])
     f.add_argument("--first", action="store_true", help="Only the oldest one (a quick test)")
     f.set_defaults(func=cmd_retry_failed)
+
+    m = sub.add_parser("make-cover", help="Make the cover image used for every clip")
+    m.add_argument("image")
+    m.set_defaults(func=cmd_make_cover)
 
     c = sub.add_parser("cleanup", help="Delete clips older than the retention window")
     c.set_defaults(func=cmd_cleanup)
