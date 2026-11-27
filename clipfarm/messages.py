@@ -105,7 +105,47 @@ def posts_lines(posts, tz_name: str) -> list[str]:
     return lines
 
 
-def clip_caption(clip: Mapping[str, Any], posts=None, tz_name: str = "UTC") -> str:
+NUMBERS = ["1️⃣", "2️⃣", "3️⃣"]
+CAPTION_LIMIT = 1024  # Telegram's limit for a video caption
+
+
+def text_options(clip: Mapping[str, Any]) -> list[dict]:
+    """The clip's text options [{"overlay", "caption"}], or [] when it has only one."""
+    import json
+
+    raw = _get(clip, "text_options")
+    try:
+        opts = json.loads(raw) if raw else []
+    except ValueError:
+        return []
+    return [o for o in opts if isinstance(o, dict)][:3] if len(opts) > 1 else []
+
+
+def _options_block(clip: Mapping[str, Any], opts: list[dict], caption_chars: int) -> list[str]:
+    chosen = int(_get(clip, "text_choice", 0) or 0)
+    lines = ["✏️ Text options (tap 1–3 to switch):"]
+    for n, o in enumerate(opts):
+        mark = " ✅" if n == chosen else ""
+        cap = o.get("caption", "") if caption_chars > 0 else ""
+        cap = cap if len(cap) <= caption_chars else cap[: caption_chars - 1].rstrip() + "…"
+        lines.append(f"{NUMBERS[n]}{mark} 🔝 {o.get('overlay', '')}")
+        if cap:
+            lines.append(f"      📝 {cap}")
+    return lines
+
+
+def clip_caption(clip: Mapping[str, Any], posts=None, tz_name: str = "UTC", note: str = "") -> str:
+    """The clip's Telegram caption. With text options, all of them are listed (the chosen one
+    marked); their post texts are shortened as needed to stay within Telegram's limit."""
+    opts = text_options(clip)
+    for chars in (400, 200, 120, 70, 0):
+        text = _clip_caption(clip, posts, tz_name, opts, chars, status_note=note)
+        if len(text) <= CAPTION_LIMIT:
+            return text
+    return text[:CAPTION_LIMIT]
+
+
+def _clip_caption(clip, posts, tz_name, opts, caption_chars, status_note="") -> str:
     dur = clip["end"] - clip["start"]
     tags = " ".join(f"#{t}" for t in clip["hashtags"].split() if t)
     rank = _get(clip, "rank", None)
@@ -115,12 +155,15 @@ def clip_caption(clip: Mapping[str, Any], posts=None, tz_name: str = "UTC") -> s
         "",
         clip["title"],
     ]
-    overlay = _get(clip, "overlay_text")
-    if overlay:
-        lines.append(f"🔝 On video: {overlay}")
-    post_text = _get(clip, "caption")
-    if post_text:
-        lines.append(f"📝 {post_text}")
+    if opts:
+        lines += _options_block(clip, opts, caption_chars)
+    else:
+        overlay = _get(clip, "overlay_text")
+        if overlay:
+            lines.append(f"🔝 On video: {overlay}")
+        post_text = _get(clip, "caption")
+        if post_text:
+            lines.append(f"📝 {post_text}")
     if tags:
         lines.append(tags)
     lines += [
@@ -139,14 +182,21 @@ def clip_caption(clip: Mapping[str, Any], posts=None, tz_name: str = "UTC") -> s
         lines += ["", note]
     if posts:
         lines += posts_lines(posts, tz_name)
-    return "\n".join(lines)[:1024]  # Telegram caption limit
+    if status_note:
+        lines += ["", status_note]
+    return "\n".join(lines)
 
 
 def clip_buttons(clip: Mapping[str, Any]) -> list[list[tuple[str, str]]]:
     """Rows of (label, callback_data)."""
     cid = clip["id"]
     if clip["status"] == dbm.PENDING_REVIEW:
-        return [[("✅ Post", f"ok:{cid}"), ("✏️ Edit title", f"title:{cid}"), ("⏭ Skip", f"skip:{cid}")]]
+        rows = [[("✅ Post", f"ok:{cid}"), ("✏️ Edit title", f"title:{cid}"), ("⏭ Skip", f"skip:{cid}")]]
+        opts = text_options(clip)
+        if opts:
+            chosen = int(_get(clip, "text_choice", 0) or 0)
+            rows.append([(f"{NUMBERS[n]}{' ✅' if n == chosen else ''}", f"txt:{cid}:{n}") for n in range(len(opts))])
+        return rows
     if clip["status"] in (dbm.APPROVED, dbm.SKIPPED):
         return [[("↩️ Undo", f"undo:{cid}")]]
     return []
@@ -159,7 +209,9 @@ def buttons_as_json(rows: list[list[tuple[str, str]]]) -> dict:
 HELP = (
     "Send me a video link (YouTube, Twitch VOD, Kick, …) and I'll cut it into vertical clips.\n\n"
     "Each finished clip arrives here with buttons:\n"
-    "✅ Post · ✏️ Edit title · ⏭ Skip\n\n"
+    "✅ Post · ✏️ Edit title · ⏭ Skip\n"
+    "1️⃣ 2️⃣ 3️⃣: three text options (on-video text + post caption). 1 is used unless you pick another;\n"
+    "a different on-video text is put on the clip in about a minute.\n\n"
     "Commands:\n"
     "/queue: recent jobs and their status\n"
     "/stats: clip counts and this month's fallback spend\n"

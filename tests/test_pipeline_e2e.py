@@ -72,8 +72,12 @@ def test_full_pipeline(tmp_path, monkeypatch, source_video):
     def fake_pick(self, *, title, uploader, duration, transcript, zones, viewer_clips=None):
         captured["zones"] = zones
         captured["transcript"] = transcript
+        loud = Candidate(36.5, 61.0, "The loud part", ["test"], 9, 8, 8, "burst")
+        loud.texts = [{"overlay": "He did NOT see that coming", "caption": "No way 💀"},
+                      {"overlay": "POV: the loudest second of the stream", "caption": "Ears 😭"}]
+        loud.overlay, loud.caption = loud.texts[0]["overlay"], loud.texts[0]["caption"]
         return [
-            Candidate(36.5, 61.0, "The loud part", ["test"], 9, 8, 8, "burst"),
+            loud,
             Candidate(5.2, 30.0, "The quiet part", ["test"], 5, 5, 5, "calm"),
             Candidate(40.0, 50.0, "Overlaps the first", [], 3, 3, 3, ""),
         ]
@@ -105,6 +109,8 @@ def test_full_pipeline(tmp_path, monkeypatch, source_video):
         assert rc.preview_path.stat().st_size < rc.final_path.stat().st_size
         assert rc.candidate.signal_score >= 0
     assert second.candidate.signal_score > first.candidate.signal_score
+    # Two hook texts: a hook-free master is kept for swapping later; one text: none is made.
+    assert second.base_path and probe(second.base_path).height == 1920 and first.base_path is None
     # Work directory is cleaned up; final clips are kept.
     assert not (cfg.work_dir / f"job-{job_id}").exists()
     assert (cfg.clips_dir / f"job-{job_id}" / "try-1" / "clip-01.mp4").exists()

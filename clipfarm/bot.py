@@ -211,10 +211,10 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     db = _db(ctx)
     try:
-        action, raw_id = (q.data or "").split(":", 1)
+        action, raw_id, *rest = (q.data or "").split(":")
         clip = db.get_clip(int(raw_id))
     except ValueError:
-        clip = None
+        action, rest, clip = "", [], None
     if clip is None:
         await q.answer("Clip not found.")
         return
@@ -224,6 +224,14 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if clip["status"] == dbm.SUPERSEDED:
         await q.answer("This clip is from an interrupted run; the job was re-run, see the newer clips.", show_alert=True)
+        return
+
+    busy = ctx.bot_data.setdefault("rerendering", set())
+    if clip["id"] in busy:
+        await q.answer("Still putting the new text on this clip, one moment…")
+        return
+    if action == "txt":
+        await choose_text(q, ctx, clip, int(rest[0]) if rest and rest[0].isdigit() else -1)
         return
 
     if action == "title":
@@ -260,6 +268,89 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             )
         else:
             await q.edit_message_reply_markup(reply_markup=_markup(messages.clip_buttons(clip)))
+    except BadRequest as exc:
+        log.info("Message edit failed: %s", exc)
+
+
+async def choose_text(q, ctx: ContextTypes.DEFAULT_TYPE, clip, n: int) -> None:
+    """Switch a clip to text option n. A different hook text is burned into the video, so the clip
+    is re-made from its hook-free master (about a minute) and the video in the chat replaced."""
+    from pathlib import Path
+
+    cfg, db = ctx.bot_data["cfg"], _db(ctx)
+    opts = messages.text_options(clip)
+    if not 0 <= n < len(opts):
+        await q.answer("No such option.")
+        return
+    if clip["status"] != dbm.PENDING_REVIEW:
+        await q.answer("Choose the text before approving: tap ↩️ Undo first.", show_alert=True)
+        return
+    if n == int(clip["text_choice"] or 0):
+        await q.answer("Already using that one.")
+        return
+    new = opts[n]
+    hook_changes = (new.get("overlay") or "") != (clip["overlay_text"] or "")
+    final = Path(clip["local_path"] or "")
+    base = Path(clip["base_path"]) if clip["base_path"] else None
+    if hook_changes and not (base and base.exists() and final.exists()):
+        await q.answer("This clip's files are gone (older than the retention period): can't change its video text.",
+                       show_alert=True)
+        return
+    before = {"text_choice": clip["text_choice"], "overlay_text": clip["overlay_text"], "caption": clip["caption"]}
+    db.update_clip(clip["id"], text_choice=n, overlay_text=new.get("overlay", ""), caption=new.get("caption", ""))
+    clip = db.get_clip(clip["id"])
+    if not hook_changes:
+        await q.answer(f"Option {n + 1} selected")
+        await _refresh_clip_message(q, db, cfg, clip)
+        return
+
+    busy = ctx.bot_data.setdefault("rerendering", set())
+    busy.add(clip["id"])
+    await q.answer(f"Option {n + 1}: putting the new text on the video (about a minute)…")
+    await _refresh_clip_message(q, db, cfg, clip, note="⏳ Putting the new text on the video…", buttons=False)
+    # In the background: the bot keeps handling other messages and buttons meanwhile.
+    ctx.application.create_task(_swap_hook(q, db, cfg, clip, new.get("overlay", ""), base, final, busy, before))
+
+
+async def _swap_hook(q, db, cfg, clip, hook: str, base, final, busy: set, before: dict) -> None:
+    import asyncio
+
+    from telegram import InputMediaVideo
+
+    from .pipeline.render import render_preview, rerender_hook
+
+    try:
+        preview = final.with_name(final.stem + ".preview.mp4")
+
+        def work():
+            rerender_hook(base, hook, clip["layout"], clip["end"] - clip["start"], final)
+            render_preview(final, preview)
+
+        await asyncio.to_thread(work)
+        # The posted file changed: any copy already uploaded to R2 is the old version.
+        db.update_clip(clip["id"], public_url=None, r2_key=None)
+        clip = db.get_clip(clip["id"])
+        with open(preview, "rb") as fh:
+            await q.edit_message_media(
+                media=InputMediaVideo(fh, caption=messages.clip_caption(clip, db.posts_for_clip(clip["id"]), cfg.post_tz),
+                                      supports_streaming=True),
+                reply_markup=_markup(messages.clip_buttons(clip)),
+            )
+    except Exception as exc:
+        log.exception("Changing the text of clip %s failed", clip["id"])
+        db.update_clip(clip["id"], **before)  # the video still has the old text: keep the records honest
+        await _refresh_clip_message(q, db, cfg, db.get_clip(clip["id"]),
+                                    note=f"⚠️ Couldn't change the video text: {str(exc)[:200]}")
+    finally:
+        busy.discard(clip["id"])
+
+
+async def _refresh_clip_message(q, db, cfg, clip, note: str = "", buttons: bool = True) -> None:
+    try:
+        await q.edit_message_caption(
+            caption=messages.clip_caption(clip, db.posts_for_clip(clip["id"]), cfg.post_tz, note=note),
+            reply_markup=_markup(messages.clip_buttons(clip)) if buttons else None,
+        )
     except BadRequest as exc:
         log.info("Message edit failed: %s", exc)
 

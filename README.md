@@ -48,7 +48,9 @@ Telegram link ─► yt-dlp ─► transcript ─► signals + LLM judge ─► 
 | Captions | Whisper word timestamps on the clip, 3-word uppercase groups, the spoken word highlighted, burned in with ffmpeg/libass |
 | Hook text | The AI writes a short context line (max 8 words, e.g. "POV: you trust your getaway driver"), shown in a white box for the whole clip: on the webcam/game seam, above the video, or near the top |
 | Post texts | Per clip: YouTube title, an Instagram/TikTok caption with searchable words, 3-5 hashtags, and a cover frame (the most expressive one, picked by the vision review) |
-| Length | 15-35 s by default (`CLIP_MIN_SECONDS` / `CLIP_MAX_SECONDS`), ending right after the payoff |
+| Length | Follows the story: setup → payoff → reaction, as short as the story allows, 15-60 s (`CLIP_MIN_SECONDS` / `CLIP_MAX_SECONDS`). The judge names the payoff second and a clip is never cut before it; the vision review also sees frames after the end and extends clips that stop before the payoff |
+| Cutscenes | Allowed when funny or surprising, at most `MAX_CUTSCENES` (2) per video; story spoilers are always dropped |
+| Text options | 3 per clip (on-video hook + post caption, different styles); pick 1/2/3 in Telegram. A hook-free master is kept per clip so another hook is put on in about a minute |
 
 ## Install on the VM (one command)
 

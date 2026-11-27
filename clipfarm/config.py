@@ -66,6 +66,7 @@ class Config:
     clips_per_video: int
     clip_min_seconds: int
     clip_max_seconds: int
+    max_cutscenes: int
     max_source_hours: float
     part_hours: float
     scout_above_hours: float
@@ -187,7 +188,8 @@ def load_config(env_file: str | None = None) -> Config:
         whisper_threads=_int("WHISPER_THREADS", os.cpu_count() or 2),
         clips_per_video=_int("CLIPS_PER_VIDEO", 12),
         clip_min_seconds=_int("CLIP_MIN_SECONDS", 15),
-        clip_max_seconds=_int("CLIP_MAX_SECONDS", 35),
+        clip_max_seconds=_int("CLIP_MAX_SECONDS", 60),
+        max_cutscenes=_int("MAX_CUTSCENES", 2),
         max_source_hours=_float("MAX_SOURCE_HOURS", 6.0),
         part_hours=_float("PART_HOURS", 2.0),
         scout_above_hours=_float("SCOUT_ABOVE_HOURS", 12.0),

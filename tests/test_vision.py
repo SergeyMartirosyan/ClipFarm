@@ -166,8 +166,9 @@ def test_retries_send_smaller_requests_and_low_thinking(monkeypatch):
     monkeypatch.setattr(vision, "sample_frames", lambda video, s, e, n=4: [b"\xff\xd8"] * n)
     cands = _cands(16)
     note = vision.VisionReviewer(SimpleNamespace(gemini_api_key="k"), Judge()).review("v", cands, [])
-    # all, then best half, then best quarter (min 4); +2 "before" frames per clip (not for the clip at 0 s)
-    assert sizes == [16 * 4 + 15 * 2, 8 * 3 + 7 * 2, 4 * 3 + 3 * 2]
+    # all, then best half, then best quarter (min 4), with every other clip frame after a timeout;
+    # +2 "before" frames per clip (not for the clip at 0 s) and +2 "after" frames per clip
+    assert sizes == [16 * 4 + 15 * 2 + 16 * 2, 8 * 2 + 7 * 2 + 8 * 2, 4 * 2 + 3 * 2 + 4 * 2]
     assert all(thinking)
     assert "AI watched 4 of 16" in note
     assert cands[0].visual == 5 and cands[10].visual is None
@@ -270,24 +271,61 @@ def _verdict(cid, **kw):
     return base
 
 
-def test_cutscene_without_reaction_is_penalised():
-    quiet, reacted, gameplay = _cand(0, 30), _cand(40, 70), _cand(80, 110)
+def test_cutscenes_are_allowed_but_spoilers_are_not():
+    quiet, reacted, gameplay, spoiler = _cand(0, 30), _cand(40, 70), _cand(80, 110), _cand(120, 150)
     v = vision.parse_verdicts(json.dumps({"clips": [
         _verdict(0, cutscene=True, streamer_reaction=2),
         _verdict(1, cutscene=True, streamer_reaction=9),
-        _verdict(2, cutscene=False, streamer_reaction=6)], "ranking": []}), 3)
-    vision.apply_verdicts([quiet, reacted, gameplay], v)
-    assert quiet.penalty == 2.5 and reacted.penalty == 1.0 and gameplay.penalty == 0
-    assert quiet.extra["exclude"] and "exclude" not in reacted.extra and "exclude" not in gameplay.extra
-    assert quiet.final_score < reacted.final_score < gameplay.final_score
-    assert "cutscene, little reaction" in quiet.vision_note and "strong reaction" in reacted.vision_note
+        _verdict(2, cutscene=False, streamer_reaction=6),
+        _verdict(3, cutscene=True, streamer_reaction=9, spoiler=True)], "ranking": []}), 4)
+    vision.apply_verdicts([quiet, reacted, gameplay, spoiler], v)
+    assert quiet.penalty == 0.5 and reacted.penalty == 0 and gameplay.penalty == 0
+    assert not any("exclude" in c.extra for c in (quiet, reacted, gameplay))
+    assert spoiler.extra["exclude"] == "story spoiler"
+    assert quiet.cutscene and reacted.cutscene and not gameplay.cutscene
+    assert "(cutscene)" in quiet.vision_note and "strong reaction" in reacted.vision_note
+
+
+def test_at_most_two_cutscenes_are_chosen():
+    from clipfarm.pipeline import select
+
+    cands = [_cand(i * 100, i * 100 + 30, title=f"c{i}") for i in range(5)]
+    for i, c in enumerate(cands):
+        c.cutscene = i < 4  # four cutscenes, all scoring higher than the gameplay clip
+        c.signal_score = 1.0 - i * 0.1
+    chosen = select.choose(cands, 5, max_cutscenes=2)
+    assert sum(c.cutscene for c in chosen) == 2 and len(chosen) == 3 and cands[4] in chosen
+
+
+def test_clip_that_stops_before_the_payoff_is_extended():
+    c = _cand(100, 130)
+    v = vision.parse_verdicts(json.dumps({"clips": [_verdict(0, ends_early=True, end_later=12)], "ranking": []}), 1)
+    vision.apply_verdicts([c], v, max_len=60)
+    assert (c.start, c.end) == (100, 142) and c.extra["ended_later"] == 12
+    # Past the cap: the start gives way, the payoff stays.
+    long = _cand(100, 155)
+    v = vision.parse_verdicts(json.dumps({"clips": [_verdict(0, ends_early=True, end_later=10)], "ranking": []}), 1)
+    vision.apply_verdicts([long], v, max_len=60)
+    assert long.end == 165 and long.end - long.start == 60
+
+
+def test_judge_payoff_keeps_the_end():
+    from clipfarm.pipeline import select
+    from clipfarm.pipeline.transcribe import Segment
+
+    segs = [Segment(50.0, 53.5, "he finally got me")]
+    assert select.keep_payoff(10, 40, 51.0, segs, 60, 1000) == (10, 53.5)  # extended to the sentence end
+    assert select.keep_payoff(10, 60, 51.0, segs, 60, 1000) == (10, 60)    # already past the payoff
+    assert select.keep_payoff(0, 40, 70.0, [], 60, 1000) == (12.5, 72.5)  # cap: the start moves later
+    assert select.keep_payoff(10, 40, None, segs, 60, 1000) == (10, 40)
 
 
 def test_judge_prompt_puts_the_streamer_first():
     from clipfarm.pipeline.judge import SYSTEM_PROMPT
 
     assert "The streamer is the show" in SYSTEM_PROMPT and "cutscene" in SYSTEM_PROMPT
-    assert "endings" in SYSTEM_PROMPT and "spoilers" in SYSTEM_PROMPT
+    assert "ending" in SYSTEM_PROMPT and "spoilers" in SYSTEM_PROMPT and "AT MOST 2 cutscene" in SYSTEM_PROMPT
+    assert "LENGTH FOLLOWS THE STORY" in SYSTEM_PROMPT and "payoff_at" in SYSTEM_PROMPT
     assert "streamer_reaction" in vision.SYSTEM_PROMPT
 
 
@@ -329,8 +367,9 @@ def test_claude_takes_over_when_every_gemini_model_fails(monkeypatch):
     cands = _cands(2)
     note = vision.VisionReviewer(SimpleNamespace(gemini_api_key="k", clip_max_seconds=60), Judge()).review("v", cands, [])
     assert note == "AI watched 2 of 2 candidates (Claude fallback)"
-    assert calls["closed"] and calls["images"] == 2 * 4 + 2  # second clip starts at 100 s: has 2 "before" frames
-    assert cands[0].visual == 9 and cands[1].penalty == 2.5
+    # 4 frames per clip, 2 "before" frames for the clip at 100 s, 2 "after" frames per clip
+    assert calls["closed"] and calls["images"] == 2 * 4 + 2 + 2 * 2
+    assert cands[0].visual == 9 and cands[1].penalty == 0.5
 
 
 def test_no_claude_when_cap_reached(monkeypatch):

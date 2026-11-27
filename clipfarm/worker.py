@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import signal
 import time
@@ -217,6 +218,8 @@ class Worker:
                 r2_key=rc.r2_key, public_url=rc.public_url,
                 overlay_text=c.overlay, caption=c.caption, cover_offset=c.extra.get("cover_offset"),
                 rank=c.extra.get("rank"),
+                text_options=json.dumps(c.texts, ensure_ascii=False) if len(c.texts) > 1 else "",
+                text_choice=0, base_path=str(rc.base_path or ""),
             )
             sent += 1
             self.flush_telegram()  # delivers this clip, plus any that failed earlier

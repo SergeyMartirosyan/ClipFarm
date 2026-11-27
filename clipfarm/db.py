@@ -134,7 +134,9 @@ class Database:
             if "decided_by" not in cols:
                 con.execute("ALTER TABLE clips ADD COLUMN decided_by TEXT NOT NULL DEFAULT ''")
             for col, decl in (("overlay_text", "TEXT NOT NULL DEFAULT ''"), ("caption", "TEXT NOT NULL DEFAULT ''"),
-                              ("cover_offset", "REAL"), ("rank", "INTEGER")):
+                              ("cover_offset", "REAL"), ("rank", "INTEGER"),
+                              ("text_options", "TEXT NOT NULL DEFAULT ''"), ("text_choice", "INTEGER NOT NULL DEFAULT 0"),
+                              ("base_path", "TEXT NOT NULL DEFAULT ''")):
                 if col not in cols:
                     con.execute(f"ALTER TABLE clips ADD COLUMN {col} {decl}")
             job_cols = {r[1] for r in con.execute("PRAGMA table_info(jobs)")}

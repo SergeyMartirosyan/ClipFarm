@@ -38,11 +38,21 @@ CLIP_SCHEMA: dict = {
                     "standalone": {"type": "integer", "description": "0-10"},
                     "payoff": {"type": "integer", "description": "0-10"},
                     "reason": {"type": "string"},
-                    "overlay": {"type": "string"},
-                    "caption": {"type": "string"},
+                    "payoff_at": {"type": "number", "description": "Second where the payoff lands"},
+                    "cutscene": {"type": "boolean"},
+                    "texts": {
+                        "type": "array",
+                        "description": "Exactly 3 options, best first",
+                        "items": {
+                            "type": "object",
+                            "properties": {"overlay": {"type": "string"}, "caption": {"type": "string"}},
+                            "required": ["overlay", "caption"],
+                            "additionalProperties": False,
+                        },
+                    },
                 },
                 "required": ["start", "end", "title", "hashtags", "hook", "standalone", "payoff", "reason",
-                             "overlay", "caption"],
+                             "payoff_at", "cutscene", "texts"],
                 "additionalProperties": False,
             },
         }
@@ -74,17 +84,13 @@ Moments real viewers clipped, especially popular ones, are proven; strongly pref
 the wording of a good viewer clip title when it fits.
 
 The streamer is the show. The transcript also contains lines spoken by the GAME (cutscene dialogue, \
-characters, narration, scripted story); those are not the streamer. Scripted cutscene dialogue reads \
-well on paper but makes a poor clip on its own: it is just the game's footage. Prefer moments where \
-the streamer is the focus: their play, their fails and wins, their reactions, their jokes and \
-opinions. Use a cutscene only when the streamer's reaction to it is the point (talking over it, \
-shocked, laughing, arguing with it), and then keep the clip centred on that reaction. Across your \
-list, mix in gameplay moments, not only story beats.
+characters, narration, scripted story); those are not the streamer. Prefer moments where the streamer \
+is the focus: their play, their fails and wins, their reactions, jokes and opinions.
 
-Publishers (e.g. Rockstar) remove fan uploads that are standalone cutscenes, compilations of story \
-dialogue, the game's ending or major plot twists, and pre-release footage. Never pick a clip that is \
-mainly a cutscene or story dialogue, and avoid endings and big story reveals (spoilers) entirely, even \
-with a reaction. Gameplay with the streamer's commentary is the safe, and better, kind of clip.
+Cutscenes are allowed when they are genuinely funny, absurd or surprising on their own, or when the \
+streamer's reaction to them is the point. Pick AT MOST 2 cutscene clips per list (set cutscene: true \
+on them), and mix the rest with gameplay. Never pick spoilers: the game's ending, a main character's \
+death, big plot twists or story reveals, even with a reaction (publishers such as Rockstar remove those).
 
 Reactions need their cause. When the streamer reacts ("what?!", "NO WAY", laughing, screaming, \
 swearing), the clip must START BEFORE whatever caused the reaction (the crash, the kill, the betrayal, \
@@ -92,18 +98,32 @@ the jump scare), usually 5-15 seconds before the first reaction words, even if n
 stretch. A gap in the transcript right before a reaction is usually where the action happened. \
 "sounds: ..." notes on hot zones (crash, explosion, gunshot, screaming) mark that action.
 
-Short wins: completion rate is what the platforms reward. Aim for 20-30 seconds: open on the action or \
-its cause, cut everything that doesn't build to the payoff, and end right after the payoff lands (a \
-clean end makes the clip loop).
+LENGTH FOLLOWS THE STORY. Every clip is a small story: setup -> build-up -> payoff -> the reaction to \
+the payoff. Find the payoff first (the punchline, the moment it finally happens, the reveal), set \
+payoff_at to that second, and end the clip 1-3 seconds after the payoff and the streamer's reaction to \
+it. Then start as late as the setup allows. Make it as short as the WHOLE story allows: a quick \
+reaction may be 15-25 seconds, a chase, a fight or a running gag that pays off later may need 40-60 \
+seconds. NEVER cut before the payoff to make a clip shorter: an unfinished story (the guy who won't \
+die is still running at the streamer when the clip ends) is worse than a longer clip. If the full \
+story does not fit the length limit, pick another moment.
 
-For each clip write:
-- overlay: the text shown in a box on top of the video for the whole clip, like viral reels do. It gives \
-a viewer who has never seen this stream the context at a glance and makes them want to watch, ideally \
-with a joke or a tease ("Speed thought he was a stealth expert", "POV: you trust your getaway driver", \
-"He did NOT see this coming"). Max 8 words. No emoji, no hashtags, don't spoil the punchline.
-- title: for YouTube Shorts, max 70 characters, curiosity-driven, no clickbait lies, no emoji.
-- caption: the post text for Instagram/TikTok: one hook sentence plus one sentence of context, using the \
-words people would search for (streamer name, game, what happens). No hashtags in it.
+For each clip write 3 text options ("texts", best first), each in a different style, so the owner \
+can choose. Each option has:
+- overlay: the text in a box on top of the video for the whole clip, like viral reels. It sets up the \
+joke or the tension for someone who has never seen this streamer, so they stay to the end. Write the \
+SETUP, not a description and not the punchline: "He would NOT stay down", "POV: you trust your \
+getaway driver", "Speed thought he was a stealth expert", "Nobody told him about the police in this \
+game". Max 8 words, plain text (the video font cannot draw emoji), no hashtags.
+- caption: the post text for Instagram/TikTok. First line: a punchy hook with 1-2 fitting emoji \
+(💀 😭 😂 🤣 🔥 😳 🫡 💯 are the ones clip pages use; 💀 / 😭 = "I'm dead, this is so funny"). Then one \
+short line of context with the words people search for (streamer name, game, what happens). Casual, \
+like a clip page talks to its followers, not like a news summary. No hashtags in it.
+Styles to vary across the 3 options: (1) a tease or joke about the situation, (2) a "POV:" or \
+relatable line, (3) a bold reaction or a question to the viewer ("Why won't he die??"). Never spoil \
+the payoff in either field.
+
+Also write:
+- title: for YouTube Shorts, max 70 characters, curiosity-driven, no clickbait lies, at most one emoji.
 - hashtags: 3-5, lowercase, without the # sign: the streamer, the game, the kind of moment.
 - reason: one sentence on why it works.
 Scores are integers 0-10."""
@@ -130,6 +150,9 @@ class Candidate:
     overlay: str = ""               # hook text shown on top of the video
     caption: str = ""               # post text for Instagram/TikTok
     cover_at: float | None = None   # absolute second of the best cover frame
+    payoff_at: float | None = None  # absolute second where the payoff lands (the clip must not end before it)
+    cutscene: bool = False          # mostly a game cutscene (capped per video)
+    texts: list[dict] = field(default_factory=list)  # [{"overlay", "caption"}] options, best first
     penalty: float = 0.0            # points off from the vision review (e.g. a cutscene nobody reacts to)
 
     @property
@@ -232,7 +255,7 @@ def build_user_prompt(
         f"Channel: {uploader or 'unknown'}",
         f"Duration: {duration:.0f} seconds",
         "",
-        f"Return up to {want} clips, best first, each {min_len}-{max_len} seconds long (shorter is better), not overlapping.",
+        f"Return up to {want} clips, best first, not overlapping, each {min_len}-{max_len} seconds: as long as its story needs and no longer.",
         "Use the [seconds] timestamps from the transcript for start and end.",
     ]
     if approved_examples or skipped_examples:
@@ -258,7 +281,13 @@ def taste_examples(db: Database | None) -> tuple[list[str], list[str]]:
         return [], []
 
     def fmt(row) -> str:
-        return f'"{row["title"]}" ({row["reason"]})'
+        text = f'"{row["title"]}" ({row["reason"]})'
+        try:
+            if row["overlay_text"]:
+                text += f' | on video: "{row["overlay_text"]}"'
+        except (IndexError, KeyError):
+            pass
+        return text
 
     return (
         [fmt(r) for r in db.recent_decisions(APPROVED, 5)],
@@ -276,6 +305,19 @@ def parse_candidates(raw: str | dict, duration: float, model: str) -> list[Candi
             continue
         if not (0 <= start < end <= duration + 1):
             continue
+        texts = []
+        for t in item.get("texts") or []:
+            if isinstance(t, dict) and (t.get("overlay") or t.get("caption")):
+                texts.append({"overlay": str(t.get("overlay", "")).strip()[:90],
+                              "caption": str(t.get("caption", "")).strip()[:400]})
+        if not texts and (item.get("overlay") or item.get("caption")):  # older single-text answers
+            texts = [{"overlay": str(item.get("overlay", "")).strip()[:90],
+                      "caption": str(item.get("caption", "")).strip()[:400]}]
+        try:
+            payoff_at = float(item["payoff_at"])
+            payoff_at = payoff_at if start < payoff_at <= end + 30 else None
+        except (KeyError, TypeError, ValueError):
+            payoff_at = None
         out.append(
             Candidate(
                 start=start,
@@ -287,8 +329,11 @@ def parse_candidates(raw: str | dict, duration: float, model: str) -> list[Candi
                 payoff=_clamp_int(item.get("payoff")),
                 reason=str(item.get("reason", "")).strip(),
                 model=model,
-                overlay=str(item.get("overlay", "")).strip()[:90],
-                caption=str(item.get("caption", "")).strip()[:400],
+                overlay=texts[0]["overlay"] if texts else "",
+                caption=texts[0]["caption"] if texts else "",
+                texts=texts[:3],
+                payoff_at=payoff_at,
+                cutscene=bool(item.get("cutscene", False)),
             )
         )
     return out

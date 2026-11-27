@@ -382,13 +382,23 @@ def test_choose_layout_uses_stream_cam(monkeypatch, tmp_path):
 
 # --- views pack: hook overlay, post caption, cover, scores ------------------------------------------
 
-def test_judge_returns_overlay_and_caption():
-    raw = json.dumps({"clips": [{"start": 10, "end": 35, "title": "t", "hashtags": ["gta6"], "hook": 8,
-                                 "standalone": 7, "payoff": 8, "reason": "r",
-                                 "overlay": "Speed thought he was a stealth expert", "caption": "Speed tries stealth."}]})
+def test_judge_returns_three_text_options_payoff_and_cutscene():
+    texts = [{"overlay": "He would NOT stay down", "caption": "Bro just kept coming 💀"},
+             {"overlay": "POV: the NPC has plot armor", "caption": "Why won't he die 😭"},
+             {"overlay": "How is he still alive", "caption": "GTA 6 NPCs are built different 🔥"}]
+    raw = json.dumps({"clips": [{"start": 10, "end": 55, "title": "t", "hashtags": ["gta6"], "hook": 8,
+                                 "standalone": 7, "payoff": 8, "reason": "r", "payoff_at": 50, "cutscene": True,
+                                 "texts": texts}]})
     c = parse_candidates(raw, 100, "m")[0]
-    assert c.overlay == "Speed thought he was a stealth expert" and c.caption == "Speed tries stealth."
-    assert "overlay" in CLIP_SCHEMA["properties"]["clips"]["items"]["required"]
+    assert c.overlay == "He would NOT stay down" and c.caption == "Bro just kept coming 💀"
+    assert len(c.texts) == 3 and c.payoff_at == 50 and c.cutscene
+    assert "texts" in CLIP_SCHEMA["properties"]["clips"]["items"]["required"]
+    # An older single-text answer still works.
+    old = json.dumps({"clips": [{"start": 10, "end": 35, "title": "t", "hashtags": [], "hook": 8, "standalone": 7,
+                                 "payoff": 8, "reason": "r", "overlay": "Speed thought he was a stealth expert",
+                                 "caption": "Speed tries stealth."}]})
+    c = parse_candidates(old, 100, "m")[0]
+    assert c.overlay == "Speed thought he was a stealth expert" and len(c.texts) == 1 and c.payoff_at is None
 
 
 def test_hook_overlay_in_ass_without_emoji():
@@ -412,11 +422,11 @@ def test_telegram_caption_shows_ai_score_rank_and_texts(tmp_path):
     assert "🔝 On video: He did NOT see this coming" in text and "📝 Speed tries stealth in GTA 6." in text
 
 
-def test_shorter_clips_by_default(tmp_path, monkeypatch):
+def test_story_length_by_default(tmp_path, monkeypatch):
     from clipfarm.config import load_config
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.delenv("CLIP_MIN_SECONDS", raising=False)
     monkeypatch.delenv("CLIP_MAX_SECONDS", raising=False)
     cfg = load_config(env_file=str(tmp_path / "none.env"))
-    assert (cfg.clip_min_seconds, cfg.clip_max_seconds) == (15, 35)
+    assert (cfg.clip_min_seconds, cfg.clip_max_seconds, cfg.max_cutscenes) == (15, 60, 2)

@@ -33,6 +33,7 @@ class RenderedClip:
     r2_key: str | None
     public_url: str | None
     offset: float = 0.0  # where the processed section starts in the full video (clip times are relative)
+    base_path: Path | None = None  # the clip without hook text, for swapping in another text option
 
 
 class PipelineError(RuntimeError):
@@ -286,6 +287,10 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
         start, end = select.snap_boundaries(
             c.start, c.end, segments, cuts, cfg.clip_min_seconds, cfg.clip_max_seconds, duration
         )
+        kept = select.keep_payoff(start, end, c.payoff_at, segments, cfg.clip_max_seconds, duration)
+        if kept != (start, end):
+            log.info("Clip %.0f-%.0fs: extended to %.0f-%.0fs so it doesn't end before the payoff", start, end, *kept)
+            start, end = kept
         cause = select.extend_to_cause(start, end, action, segments, cfg.clip_max_seconds)
         if cause < start:
             log.info("Clip %.0f-%.0fs: starting %.0fs earlier to include what caused the reaction",
@@ -297,16 +302,18 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
         snapped.append(c)
 
     # Second look: Gemini watches frames of the best non-overlapping candidates and ranks them.
-    shortlist = select.choose(snapped, max(cfg.clips_per_video, cfg.vision_candidates))
+    shortlist = select.choose(snapped, max(cfg.clips_per_video, cfg.vision_candidates))  # cutscenes capped later
     if cfg.vision_review and cfg.gemini_api_key and len(shortlist) > 1:
         on_status("analyzing", f"AI is watching the top {len(shortlist)} candidates")
         note = vision.VisionReviewer(cfg, judge).review(source.video_path, shortlist, segments)
         log.info("Vision review: %s", note)
+    for c in shortlist:  # the review may have moved an end past the end of the video
+        c.end = min(c.end, duration)
     dropped = [c for c in shortlist if c.extra.get("exclude")]
     if dropped:
         log.info("Dropped %d candidates: %s", len(dropped), "; ".join(sorted({c.extra["exclude"] for c in dropped})))
         shortlist = [c for c in shortlist if not c.extra.get("exclude")]
-    chosen = select.choose(shortlist, cfg.clips_per_video)
+    chosen = select.choose(shortlist, cfg.clips_per_video, max_cutscenes=cfg.max_cutscenes)
     for rank, c in enumerate(chosen, start=1):  # choose() returns best first
         c.extra["rank"] = rank
         if c.cover_at is None:  # no vision verdict: the strongest second of the clip
@@ -359,8 +366,17 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
                 hook=c.overlay, hook_pos=render.hook_position(lay), duration=c.end - c.start,
             )
         c.extra["cover_offset"] = round(min(max(0.0, (c.cover_at or c.start) - c.start), max(0.0, c.end - c.start - 0.5)), 2)
+        # Several hook texts to choose from: also keep the clip without one, so another option can
+        # be put on in a minute later (the source video is gone by then).
+        base = base_ass = None
+        if len({t["overlay"] for t in c.texts if t.get("overlay")}) > 1:
+            base = outdir / f"clip-{i:02d}.base.mp4"
+            if words:
+                base_ass = captions.write_ass(words, workdir / f"clip-{i:02d}.base.ass",
+                                              margin_v=render.caption_margin(lay), duration=c.end - c.start)
         final = render.render_clip(
-            source.video_path, c.start, c.end, lay, ass_path, outdir / f"clip-{i:02d}.mp4", vinfo.has_audio
+            source.video_path, c.start, c.end, lay, ass_path, outdir / f"clip-{i:02d}.mp4", vinfo.has_audio,
+            base_out=base, base_ass=base_ass,
         )
         preview = render.render_preview(final, outdir / f"clip-{i:02d}.preview.mp4")
 
@@ -384,7 +400,7 @@ def _process(url, job_id, cfg, workdir, outdir, transcriber, db, on_status, on_c
 
         clip = RenderedClip(
             idx=i, total=len(chosen), candidate=c, layout=lay.kind,
-            final_path=final, preview_path=preview, r2_key=key, public_url=url_, offset=offset,
+            final_path=final, preview_path=preview, r2_key=key, public_url=url_, offset=offset, base_path=base,
         )
         rendered.append(clip)
         on_clip(clip)

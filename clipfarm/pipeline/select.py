@@ -57,16 +57,37 @@ def overlaps(a: tuple[float, float], b: tuple[float, float], tolerance: float = 
     return a[0] < b[1] - tolerance and b[0] < a[1] - tolerance
 
 
-def choose(candidates: list[Candidate], limit: int) -> list[Candidate]:
-    """Best final score first, dropping anything that overlaps an already-chosen clip."""
+def choose(candidates: list[Candidate], limit: int, max_cutscenes: int | None = None) -> list[Candidate]:
+    """Best final score first, dropping anything that overlaps an already-chosen clip, and keeping
+    at most `max_cutscenes` clips that are mostly a game cutscene."""
     chosen: list[Candidate] = []
     for c in sorted(candidates, key=lambda c: c.final_score, reverse=True):
         if any(overlaps((c.start, c.end), (k.start, k.end)) for k in chosen):
+            continue
+        if max_cutscenes is not None and c.cutscene and sum(1 for k in chosen if k.cutscene) >= max_cutscenes:
             continue
         chosen.append(c)
         if len(chosen) >= limit:
             break
     return chosen
+
+
+PAYOFF_TAIL = 2.5  # seconds kept after the payoff for the streamer's reaction
+
+
+def keep_payoff(start: float, end: float, payoff_at: float | None, segments: list[Segment], max_len: float,
+                duration: float) -> tuple[float, float]:
+    """A clip must not end before its payoff (plus a beat for the reaction). Extends the end, onto
+    the end of a sentence when one finishes shortly after; if that breaks the length cap, the start
+    moves later (the setup is cheaper to lose than the punchline)."""
+    if payoff_at is None or end >= payoff_at + 1.0:
+        return start, end
+    want = payoff_at + PAYOFF_TAIL
+    ends = [seg.end for seg in segments if want - 0.5 <= seg.end <= want + 3.0]
+    new_end = min(duration, min(ends) if ends else want)
+    if new_end - start > max_len:
+        start = max(0.0, new_end - max_len)
+    return round(start, 2), round(new_end, 2)
 
 
 def with_bounds(c: Candidate, start: float, end: float) -> Candidate:
